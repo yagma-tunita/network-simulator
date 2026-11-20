@@ -151,6 +151,30 @@ Notable fixes:
 - Cleaned up two mistakes: a stray empty repository created in the home
   directory, and a mistakenly published nested repository — then connected the
   project root to the GitHub remote and pushed `main`.
+- Added a `.gitattributes` (`* text=auto eol=lf`) to normalize line endings to
+  LF, and adopted the official GitHub C++ `.gitignore` template.
+- Wrote `README.md` (project documentation) and this `DEVELOPMENT_LOG.md`.
+
+## Phase 13 — Router module (in progress) (2026-11-20)
+
+- Added `device/Router.hpp` / `Router.cpp` with:
+  - `struct Route { Ipv4Subnet dst; Ipv4 nextHop; bool direct = false; }`.
+  - `struct Router : Device` holding an ARP cache (`std::map<Ipv4, Mac>`) and a
+    routing table (`std::vector<Route>`).
+- Implemented `Router::IsMyIp(Ipv4)`: returns true if any own port has `hasIp`
+  set and a matching IP.
+- Declared `OnFrame(Port*, const EthernetFrame&) override` (not yet implemented).
+- Planned helpers (to be declared/implemented): `HandleArp`, `SendArpRequest`,
+  `Lookup`, `AddRoute`, `FindRoute` (longest-prefix match), `PortForNextHop`.
+
+Notable fixes / lessons:
+- Include paths in `Router.hpp` corrected from `./core/...` to `../core/...`.
+- `Route::direct` initialized to `false` to avoid an indeterminate bool.
+- Declaring (without defining) the `OnFrame` override makes `Router` concrete, but
+  linking a program that instantiates it fails with
+  `undefined reference to vtable for Router` until `OnFrame` is actually defined.
+  A temporary stub `OnFrame` was used — only inside a throwaway test — to
+  validate `IsMyIp`.
 
 ---
 
@@ -166,6 +190,8 @@ modules:
 - End-to-end ARP on two hosts across a link (request → reply → cache).
 - Switch topology (3 hosts + 1 switch): flooding, learning, unicast forwarding,
   and MAC-table aging with the logical clock.
+- `Router::IsMyIp` verified with a temporary test (a stub `OnFrame` was needed to
+  satisfy the vtable). Router forwarding (`OnFrame`) is still in progress.
 
 ## Lessons / conventions adopted
 
@@ -177,3 +203,6 @@ modules:
   files include the definitions they use.
 - Keep interfaces const-correct (`const EthernetFrame&` everywhere it is read).
 - Model time with a logical clock so simulation results are reproducible.
+- A polymorphic class whose virtual override is declared but not defined links
+  with `undefined reference to vtable` the moment it is instantiated; define the
+  override (even as a stub) before constructing the object.

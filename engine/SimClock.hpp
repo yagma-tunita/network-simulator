@@ -2,7 +2,6 @@
 
 #include <cstdint>
 
-// 模拟逻辑时钟：由引擎/测试通过 Advance 推进，设备读 Now
 namespace SimClock
 {
     inline uint64_t g_now = 0;
