@@ -41,11 +41,13 @@ The simulator models a small network out of discrete objects:
   sent, each with a byte codec.
 - **Interfaces** (`Port`) attach a device to a wire.
 - **Links** (`Link`) connect exactly two ports and move frames between them.
-- **Devices** (`Device` base; `EndDevice`, `Switch`) decide what to do with a
-  received frame.
+- **Devices** (`Device` base; `EndDevice`, `Switch`, `Router`) decide what to do
+  with a received frame.
+- **ArpAgent** is a shared component used by hosts and routers for ARP caching
+  and request/reply handling.
 
-The design favors clarity and determinism over raw performance, and aims to make
-adding a `Router` (Layer-3) or VLAN support straightforward.
+The design favors clarity and determinism over raw performance. Source files are
+comment-free; all documentation lives in this README and `DEVELOPMENT_LOG.md`.
 
 ## Features
 
@@ -58,6 +60,9 @@ adding a `Router` (Layer-3) or VLAN support straightforward.
 - Ports and point-to-point links with automatic back-reference wiring.
 - Host behavior: ARP resolution and an ARP cache.
 - Switch behavior: MAC learning, flooding, unicast forwarding, MAC-table aging.
+- Router behavior: longest-prefix routing table, TTL handling, next-hop ARP,
+  MAC-header rewrite, and automatic connected routes per configured port.
+- Shared ARP agent for hosts and routers (cache + request/reply handling).
 - A logical simulation clock for deterministic, time-based behavior.
 
 ## Architecture
@@ -66,10 +71,11 @@ The project is layered; each layer depends only on lower layers.
 
 ```
 +--------------------------------------------------------------+
-| device layer   Device (abstract)                             |
+| device layer   Device (abstract; portList, virtual OnFrame)  |
 |                ├─ EndDevice   (host: ARP)                    |
 |                ├─ Switch      (L2: learning + forwarding)    |
-|                └─ Router      (planned: L3 routing)          |
+|                └─ Router      (L3: routing + forwarding)     |
+|                ArpAgent      (shared ARP: cache + handling)  |
 +--------------------------------------------------------------+
 | interface      Port  (mac, ip/subnet, link*, owner*)         |
 +--------------------------------------------------------------+
@@ -126,8 +132,10 @@ Internet/
 │   └── IpPacket.hpp / .cpp
 ├── device/                  # networked devices and interfaces
 │   ├── Device.hpp / .cpp    # abstract base
+│   ├── ArpAgent.hpp / .cpp  # shared ARP cache + request/reply
 │   ├── EndDevice.hpp / .cpp # host
 │   ├── Switch.hpp / .cpp    # Layer-2 switch
+│   ├── Router.hpp / .cpp    # Layer-3 router
 │   ├── Port.hpp / .cpp
 │   └── Link.hpp / .cpp
 ├── engine/                  # simulation engine
@@ -267,19 +275,43 @@ ReadU8(buf, off)      ReadU16(buf, off)     ReadIpv4(buf, off)    ReadMac(buf, o
 | Member | Description |
 |--------|-------------|
 | `std::vector<Port*> portList` | owned interfaces |
-| `void AddPort(Port*)` | register a port |
+| `virtual void AddPort(Port*)` | register a port (Router overrides to add connected routes) |
 | `virtual void OnFrame(Port*, const EthernetFrame&) = 0` | per-device handling |
 | `virtual ~Device() = default` | polymorphic destruction |
+
+### `ArpAgent` — `device/ArpAgent.hpp` (shared ARP)
+
+Used by both `EndDevice` and `Router`; owns the cache and request/reply handling.
+
+| Member | Description |
+|--------|-------------|
+| `std::map<Ipv4, Mac> cache` | IP → MAC cache |
+| `bool Lookup(Ipv4, Mac&) const` | query the cache |
+| `void HandleArp(Port*, const EthernetFrame&)` | answer requests / learn replies |
+| `void SendArpRequest(Ipv4 targetIp, Port* outPort)` | broadcast a request out of a port |
 
 ### `EndDevice` — `device/EndDevice.hpp` (host)
 
 | Member | Description |
 |--------|-------------|
-| `std::map<Ipv4, Mac> arpCache` | IP → MAC cache |
+| `ArpAgent arp` | ARP cache + handling |
 | `void OnFrame(Port*, const EthernetFrame&) override` | filter, then dispatch ARP |
-| `void SendArpRequest(Ipv4 targetIp)` | resolve a target IP via broadcast |
-| `void HandleArp(Port*, const EthernetFrame&)` | answer requests / learn replies |
-| `bool Lookup(Ipv4, Mac& out)` | query the cache |
+| `void SendArpRequest(Ipv4 targetIp)` | pick egress port, then ARP request |
+| `bool Lookup(Ipv4, Mac&)` | query the ARP cache |
+
+### `Router` — `device/Router.hpp` (Layer-3 router)
+
+| Member | Description |
+|--------|-------------|
+| `struct Route { Ipv4Subnet dst; Ipv4 nextHop; bool direct; }` | one route |
+| `ArpAgent arp` | next-hop ARP resolution |
+| `std::vector<Route> routeTable` | routing table |
+| `void AddPort(Port*) override` | add port; auto-add a direct route when it has an IP |
+| `void OnFrame(Port*, const EthernetFrame&) override` | ARP + IPv4 forwarding |
+| `void AddRoute(Ipv4Subnet, Ipv4 nextHop, bool direct)` / `AddRoute(const Route&)` | add routes |
+| `const Route* FindRoute(Ipv4) const` | longest-prefix match |
+| `bool IsMyIp(Ipv4) const` | whether an IP belongs to a local port |
+| `Port* PortForNextHop(Ipv4)` | egress port whose subnet contains an IP |
 
 ### `Switch` — `device/Switch.hpp` (Layer-2 switch)
 
@@ -460,6 +492,23 @@ erases entries whose age exceeds `kAgingTimeout`. Learning refreshes `lastSeen`,
 so active stations never expire. Time comes from `SimClock`, keeping runs
 deterministic.
 
+### Router forwarding
+
+For a received frame the router:
+
+1. Accepts frames addressed to its port MAC or to the broadcast address.
+2. Dispatches ARP to its `ArpAgent`.
+3. For IPv4: parses the packet; if the destination is one of its own port IPs it
+   is local (currently ignored). Otherwise, drop if TTL ≤ 1, decrement TTL, and do
+   a longest-prefix lookup in the routing table. The next hop is the destination
+   itself for `direct` routes, else `route.nextHop`. The egress port is the one
+   whose subnet contains the next hop. If the next-hop MAC is unknown, the router
+   sends an ARP request and drops the packet; otherwise it rewrites the Ethernet
+   header (destination = next-hop MAC, source = egress port MAC) and transmits.
+
+Connected subnets are added automatically as `direct` routes when a port with an
+IP is added (`Router::AddPort`).
+
 ## Design notes
 
 - **Network byte order.** Multi-byte integers are written big-endian through
@@ -474,6 +523,10 @@ deterministic.
   `Port` works with any device type.
 - **Deterministic time.** `SimClock` is a logical counter; nothing depends on the
   wall clock.
+- **Shared components.** `ArpAgent` (ARP behavior) and `ByteIO` (big-endian codec)
+  are reused to avoid duplication.
+- **Comment-free sources.** `.cpp` / `.hpp` files contain no comments; all design
+  and behavior documentation lives in this README and `DEVELOPMENT_LOG.md`.
 
 ## Status and roadmap
 
@@ -485,11 +538,15 @@ Implemented:
 - [x] `Port`, `Link`, `Device` base
 - [x] `EndDevice` (ARP host)
 - [x] `Switch` (learning, flooding, forwarding, aging)
+- [x] `Router` (longest-prefix routing, TTL, next-hop ARP, MAC rewrite,
+      automatic connected routes)
+- [x] Shared `ArpAgent`
 - [x] `SimClock` logical clock
 
 Planned:
 
-- [ ] `Router` — routing table, next-hop ARP, TTL handling, MAC rewrite
+- [ ] Router: ARP pending-packet queue (hold packets until the next hop resolves)
+- [ ] Router: ARP cache aging
 - [ ] VLAN support
 - [ ] Topology builder (`topo/`) to assemble devices and links
 - [ ] Event-driven engine and packet tracing

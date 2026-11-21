@@ -60,6 +60,6 @@ Ipv4Subnet::Ipv4Subnet(const Ipv4 &network, uint8_t prefix): network(network), p
 
 Ipv4Subnet::Ipv4Subnet(const std::string &s)
 {
-    if(!TryParse(s, *this)) 
+    if(!TryParse(s, *this))
             throw std::invalid_argument("Ipv4Subnet: invalid \"" + s + "\"");
 }

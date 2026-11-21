@@ -9,7 +9,7 @@ struct Device
 {
     std::vector<Port*> portList;
 
-    void AddPort(Port *p);
+    virtual void AddPort(Port *p);
 
     virtual void OnFrame(Port *port, const EthernetFrame &frame) = 0;
     virtual ~Device() = default;

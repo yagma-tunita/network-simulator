@@ -33,7 +33,7 @@ std::vector<uint8_t> IpPacket::ToBytes() const
     AppendU16(buf, 0);
     AppendU8(buf, ttl);
     AppendU8(buf, protocol);
-    AppendU16(buf, 0);                    
+    AppendU16(buf, 0);
     AppendIpv4(buf, srcIp);
     AppendIpv4(buf, dstIp);
 

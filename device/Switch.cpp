@@ -5,7 +5,7 @@
 void Switch::OnFrame(Port *port, const EthernetFrame &frame)
 {
     uint64_t now = SimClock::Now();
-    AgeOut(now);                 
+    AgeOut(now);
 
     if((frame.src.bytes[0] & 0x01) == 0)
         macTable[frame.src] = Entry{ port, now };
@@ -34,7 +34,7 @@ void Switch::AgeOut(uint64_t now)
     for(auto it = macTable.begin(); it != macTable.end(); )
     {
         if((now - it->second.lastSeen) > kAgingTimeout)
-            it = macTable.erase(it);  
+            it = macTable.erase(it);
         else
             ++it;
     }

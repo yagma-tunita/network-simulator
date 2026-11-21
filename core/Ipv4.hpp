@@ -11,7 +11,7 @@ struct Ipv4
     bool operator<(const Ipv4 &o)const;
     Ipv4 operator&(const Ipv4 &o)const;
     static Ipv4 Any();
-    static Ipv4 Broadcast(); 
+    static Ipv4 Broadcast();
 
     static bool TryParse(const std::string &s, Ipv4 &out);
 

@@ -1,11 +1,9 @@
 #pragma once
 
 #include "Device.hpp"
+#include "ArpAgent.hpp"
 #include "../core/Ipv4.hpp"
-#include "../core/Mac.hpp"
-#include "../core/IpPacket.hpp"
 #include "../core/Ipv4Subnet.hpp"
-#include <map>
 #include <vector>
 
 struct Port;
@@ -17,16 +15,23 @@ struct Route
     bool direct = false;
 
     Route() = default;
+    Route(const Ipv4Subnet &dst, const Ipv4 &nextHop, bool direct);
 };
 
-struct Router :Device
+struct Router : Device
 {
-    std::map<Ipv4, Mac>arpCache;
-    std::vector<Route>routeTable;
+    ArpAgent arp;
+    std::vector<Route> routeTable;
 
-    void OnFrame(Port* port, const EthernetFrame& frame) override;
+    void AddPort(Port* p) override;
+
     bool IsMyIp(Ipv4 ip) const;
+    void AddRoute(const Ipv4Subnet &dst, const Ipv4 &nextHop, bool direct);
+    void AddRoute(const Route &r);
+    const Route* FindRoute(const Ipv4 &dstip) const;
+    Port* PortForNextHop(const Ipv4 &ip);
+
+    void OnFrame(Port *port, const EthernetFrame &frame) override;
 
     Router() = default;
 };
-

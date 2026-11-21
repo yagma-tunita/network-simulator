@@ -22,7 +22,7 @@ void Link::Connected(Port *x, Port *y)
     A = x;
     B = y;
     if(A != nullptr) A->Attach(this);
-    if(B != nullptr) B->Attach(this); 
+    if(B != nullptr) B->Attach(this);
 }
 
 Link::Link(Port *A, Port *B) :A(A),B(B)
@@ -30,4 +30,3 @@ Link::Link(Port *A, Port *B) :A(A),B(B)
     if(A != nullptr) A->Attach(this);
     if(B != nullptr) B->Attach(this);
 }
-

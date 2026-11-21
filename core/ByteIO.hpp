@@ -7,7 +7,7 @@
 #include "Ipv4.hpp"
 #include "Mac.hpp"
 
-// 大端（网络序）字节读写工具，供 ARP / IpPacket 等协议编解码复用
+
 namespace ByteIO
 {
     inline void AppendU8(std::vector<uint8_t> &buf, uint8_t v)
@@ -17,7 +17,7 @@ namespace ByteIO
 
     inline void AppendU16(std::vector<uint8_t> &buf, uint16_t v)
     {
-        buf.push_back(uint8_t(v >> 8));   // 高字节在前
+        buf.push_back(uint8_t(v >> 8));
         buf.push_back(uint8_t(v));
     }
 

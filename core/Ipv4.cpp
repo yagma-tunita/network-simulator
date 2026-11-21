@@ -63,8 +63,8 @@ namespace
         uint8_t c = (value >> 8) & 0xFF;
         uint8_t d = (value >> 0) & 0xFF;
 
-        return 
-            std::to_string(a) + "." + 
+        return
+            std::to_string(a) + "." +
             std::to_string(b) + "." +
             std::to_string(c) + "." +
             std::to_string(d);
@@ -103,5 +103,3 @@ bool Ipv4::TryParse(const std::string &s, Ipv4 &out)
     out.value = value;
     return true;
 }
-
-

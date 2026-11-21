@@ -176,6 +176,26 @@ Notable fixes / lessons:
   A temporary stub `OnFrame` was used — only inside a throwaway test — to
   validate `IsMyIp`.
 
+## Phase 14 — Router refactor, shared ARP, and comment-free sources (2026-11-20)
+
+- Extracted a shared `ArpAgent` (`device/ArpAgent.hpp/.cpp`) that owns the ARP
+  cache and request/reply handling. `EndDevice` and `Router` now compose it,
+  removing the duplicated `HandleArp` / `Lookup` / `SendArpRequest` code.
+- Completed `Router::OnFrame`: ARP dispatch plus IPv4 forwarding — TTL
+  decrement, longest-prefix lookup, egress-port selection, next-hop ARP
+  resolution, MAC-header rewrite, and transmit.
+- Implemented router helpers: `IsMyIp`, `AddRoute` (two overloads), `FindRoute`
+  (longest-prefix match), and `PortForNextHop`.
+- Made `Device::AddPort` virtual; `Router` overrides it to auto-register a
+  `direct` route for each IP-configured port (connected routes), so directly
+  attached subnets are reachable without manual configuration.
+- Robustness: null-pointer guards in `OnFrame` and `ArpAgent::HandleArp`;
+  `Lookup` made `const`; consistent `const&` parameters.
+
+Conventions:
+- Source files are comment-free (all `.cpp` / `.hpp`). All documentation lives in
+  `README.md` and this log; code carries no comments.
+
 ---
 
 ## Validation approach (2026-11-20)

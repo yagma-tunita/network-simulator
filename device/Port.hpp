@@ -15,7 +15,7 @@ struct Port
     bool hasIp = false;
     Ipv4 ip;
     Ipv4Subnet subnet;
-    
+
     Link *link = nullptr;
     Device *owner = nullptr;
 

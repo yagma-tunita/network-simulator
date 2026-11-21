@@ -2,7 +2,7 @@
 #include <cstddef>
 #include <stdexcept>
 
-namespace 
+namespace
 {
     int hexVal(char c)
     {
@@ -69,7 +69,7 @@ bool Mac::operator<(const Mac &m) const
 {
     for(size_t i = 0; i < 6; i++)
     {
-        if (bytes[i] != m.bytes[i]) 
+        if (bytes[i] != m.bytes[i])
             return bytes[i] < m.bytes[i];
     }
 
@@ -84,9 +84,9 @@ std::string Mac::ToString() const
 
     for (size_t i = 0; i < 6; i++)
     {
-        out += hexChar(bytes[i] >> 4);     
-        out += hexChar(bytes[i] & 0xF);  
-        if (i < 5) out += ':'; 
+        out += hexChar(bytes[i] >> 4);
+        out += hexChar(bytes[i] & 0xF);
+        if (i < 5) out += ':';
     }
 
     return out;

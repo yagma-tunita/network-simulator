@@ -7,7 +7,7 @@ static std::string toHex4(uint16_t v)
     std::string s(4, '0');
     s[0] = digits[(v >> 12) & 0xF];
     s[1] = digits[(v >>  8) & 0xF];
-    s[2] = digits[(v >>  4) & 0xF]; 
+    s[2] = digits[(v >>  4) & 0xF];
     s[3] = digits[(v      ) & 0xF];
     return s;
 }
