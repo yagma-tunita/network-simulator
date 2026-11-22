@@ -7,6 +7,7 @@
 
 struct Port;
 struct EthernetFrame;
+struct Clock;
 
 
 struct ArpAgent
@@ -20,6 +21,11 @@ struct ArpAgent
     static constexpr uint64_t kTimeout = 300;
 
     std::map<Ipv4, Entry> cache;
+    Clock *clock = nullptr;
+
+
+    void SetClock(Clock *c);
+    uint64_t Now() const;
 
 
     bool Lookup(Ipv4 ip, Mac &outMac);

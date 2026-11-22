@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>yanas net</title>
+  <link rel="icon" href="/logo.svg">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="desktop">
+    <div class="window">
+      <div class="titlebar">
+        <img class="logo" src="/logo.svg" alt="yanas net">
+        <div class="name">yanas net <small>Network Simulator</small></div>
+        <div class="winbtn">_</div>
+        <div class="winbtn">&#9633;</div>
+        <div class="winbtn">&times;</div>
+      </div>
+
+      <div class="menubar">
+        <span>File</span><span>Edit</span><span>View</span><span>Tools</span><span>Help</span>
+      </div>
+
+      <div class="toolbar">
+        <button class="btn" id="btnHost">+ Host</button>
+        <button class="btn" id="btnSwitch">+ Switch</button>
+        <button class="btn" id="btnRouter">+ Router</button>
+        <button class="btn" id="btnPort">+ Port</button>
+        <button class="btn" id="btnConnect">Connect</button>
+        <button class="btn primary" id="btnRun">Run</button>
+        <button class="btn" id="btnStep">Step</button>
+        <button class="btn" id="btnPing">Ping</button>
+        <button class="btn" id="btnStp">STP</button>
+        <button class="btn" id="btnSave">Save</button>
+        <button class="btn" id="btnLoad">Load</button>
+        <button class="btn" id="btnRefresh">Refresh</button>
+      </div>
+
+      <div class="main">
+        <div class="sidebar">
+          <div class="panel">
+            <h3>Palette</h3>
+            <div class="body hint">
+              Add devices, then add ports, then connect <code>A:idx B:idx</code>.
+              Use the command line for advanced commands (set-vlan, set-stp, ...).
+            </div>
+          </div>
+          <div class="panel" style="flex:1; display:flex; flex-direction:column; min-height:0;">
+            <h3>Inspector</h3>
+            <div class="body mono" id="inspector">Select a device.</div>
+          </div>
+        </div>
+
+        <div class="canvas-wrap">
+          <svg id="topo" xmlns="http://www.w3.org/2000/svg"></svg>
+        </div>
+      </div>
+
+      <div class="console-wrap">
+        <div class="console" id="log"></div>
+        <div class="cmdline">
+          <input id="cmdInput" type="text" placeholder="command  (e.g. set-stp SW1 on)" autocomplete="off">
+          <button class="btn" id="btnSend">Send</button>
+        </div>
+      </div>
+
+      <div class="statusbar">
+        <div class="cell grow" id="status">Ready</div>
+        <div class="cell" id="count">0 devices</div>
+        <div class="cell" id="clock">t=0</div>
+      </div>
+    </div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

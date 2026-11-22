@@ -10,6 +10,7 @@ struct IpPacket
 {
     static constexpr uint8_t kDefaultTtl = 64;
     static constexpr size_t  kHeaderSize = 20;
+    static constexpr uint8_t kIcmp = 1;
 
     uint8_t ttl = kDefaultTtl;
     uint8_t protocol = 0;

@@ -1,0 +1,70 @@
+.TH YANASNET 1 "2026-11-22" "yanas net 0.1.0" "User Commands"
+.SH NAME
+yanas net \- deterministic Layer-2/Layer-3 network simulator
+.SH SYNOPSIS
+.B netsim
+[\fIoptions\fR] [\fIfile\fR]
+.SH DESCRIPTION
+.B yanas net
+simulates IPv4/Ethernet networks (ARP, VLAN/802.1Q, MAC-learning switches,
+spanning tree, static routing, ICMP) on a deterministic logical clock.
+It runs an interactive command prompt, line-command scripts, Lua scripts, or
+loads \fB.yn\fR scene files.
+.SH OPTIONS
+.TP
+.B \-h, \-\-help
+Show usage and exit.
+.TP
+.B \-\-version
+Print the version and exit.
+.TP
+.B \-\-features
+List build features (e.g. \fBlua\fR) and exit.
+.TP
+.B \-q, \-\-quiet
+Suppress status lines such as \fBran; now=\fR and \fBdone; now=\fR.
+.TP
+.B \-\-keep-going
+Continue after a script error instead of stopping at the first one.
+.TP
+.B \-\-no\-lua
+Refuse to execute \fB.lua\fR scripts (defense in depth beyond the default sandbox).
+.TP
+.B \-i, \-\-interactive
+Enter the interactive prompt after loading a file.
+.TP
+.B \-\-serve [port]
+Serve the loopback JSON API on 127.0.0.1 (default port 8080).
+.TP
+.B \-f, \-\-file \fIpath\fR
+Run a scene or script file.
+.SH FILES
+.TP
+.I *.yn
+Scene file (JSON) with devices, ports, links, STP/routing/gateway settings, and
+canvas layout.
+.TP
+.I *.txt
+Line-command script.
+.TP
+.I *.lua
+Lua scenario script (sandboxed by default; see SECURITY).
+.SH SECURITY
+Lua scripts run in a restricted sandbox: only the base library (without
+\fBdofile\fR, \fBload\fR, \fBloadfile\fR, \fBrequire\fR) plus \fBstring\fR,
+\fBtable\fR, \fBmath\fR, \fButf8\fR, and \fBcoroutine\fR are available;
+\fBos\fR, \fBio\fR, \fBpackage\fR, and \fBdebug\fR are not loaded. A per-run
+instruction budget and a script-size limit stop runaway scripts. Use
+\fB\-\-no\-lua\fR to disable Lua entirely.
+.SH EXIT STATUS
+0 on success, 1 on runtime/script errors, 2 on usage errors.
+.SH EXAMPLES
+.nf
+netsim
+netsim tests/config.yn
+netsim -i tests/config.yn
+netsim tests/auto_ping.txt
+netsim --serve 8080
+.fi
+.SH SEE ALSO
+The project README and DEVELOPMENT_LOG.md.

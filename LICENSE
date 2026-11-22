@@ -1,0 +1,17 @@
+yanas net — Proprietary Software License (PLACEHOLDER)
+
+Copyright (c) 2026 yanas. All rights reserved.
+
+This software and its source code are proprietary and confidential. No part of
+this software may be copied, modified, distributed, sublicensed, or used except
+as expressly permitted in a separate written agreement with the copyright holder.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM, OUT OF
+OR IN CONNECTION WITH THE SOFTWARE.
+
+NOTE: This text is a placeholder to be replaced with a license reviewed by legal
+counsel before any distribution or sale. If Lua support is built, the Lua runtime
+is distributed under its own MIT license and must be attributed accordingly.

@@ -25,7 +25,7 @@ Ipv4 Ipv4Subnet::Mask() const { return Ipv4(MaskU32(prefix)); }
 
 Ipv4 Ipv4Subnet::Broadcast() const { return Ipv4(network.value | ~MaskU32(prefix));}
 
-bool Ipv4Subnet::Contains(const Ipv4 &ip) const { return (ip & Mask()) == network;}
+bool Ipv4Subnet::Contains(const Ipv4 &ip) const { return (ip.value & MaskU32(prefix)) == network.value;}
 
 bool Ipv4Subnet::TryParse(const std::string &s, Ipv4Subnet &out)
 {

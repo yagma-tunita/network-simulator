@@ -3,7 +3,18 @@
 #include "../core/Aging.hpp"
 #include "../core/EthernetFrame.hpp"
 #include "../core/ARP.hpp"
-#include "../engine/SimClock.hpp"
+#include "../engine/Clock.hpp"
+#include <memory>
+
+void ArpAgent::SetClock(Clock *c)
+{
+    clock = c;
+}
+
+uint64_t ArpAgent::Now() const
+{
+    return clock ? clock->Now() : 0;
+}
 
 bool ArpAgent::Lookup(Ipv4 ip, Mac &outMac)
 {
@@ -11,7 +22,7 @@ bool ArpAgent::Lookup(Ipv4 ip, Mac &outMac)
     if (it == cache.end())
         return false;
 
-    uint64_t now = SimClock::Now();
+    uint64_t now = Now();
     if (now - it->second.lastSeen > kTimeout)
     {
         cache.erase(it);
@@ -27,7 +38,7 @@ void ArpAgent::Learn(Ipv4 ip, const Mac &mac)
 {
     Entry &e = cache[ip];
     e.mac = mac;
-    e.lastSeen = SimClock::Now();
+    e.lastSeen = Now();
 }
 
 void ArpAgent::AgeOut(uint64_t now)
@@ -40,7 +51,7 @@ void ArpAgent::HandleArp(Port *port, const EthernetFrame &frame)
     if (!port)
         return;
 
-    AgeOut(SimClock::Now());
+    AgeOut(Now());
 
     ARP msg;
     if (!ARP::TryFromBytes(frame.payload, msg))
@@ -52,8 +63,8 @@ void ArpAgent::HandleArp(Port *port, const EthernetFrame &frame)
         {
             ARP reply = ARP::MakeReply(port->ip, port->mac,
                                        msg.senderIp, msg.senderMac);
-            port->Send(EthernetFrame(msg.senderMac, port->mac,
-                                     EthernetFrame::kARP, reply.ToBytes()));
+            port->Send(std::make_shared<const EthernetFrame>(
+                msg.senderMac, port->mac, EthernetFrame::kARP, reply.ToBytes()));
         }
     }
     else if (msg.IsReply())
@@ -68,6 +79,6 @@ void ArpAgent::SendArpRequest(Ipv4 targetIp, Port *outPort)
         return;
 
     ARP req = ARP::MakeRequest(outPort->ip, outPort->mac, targetIp);
-    outPort->Send(EthernetFrame(Mac::Broadcast(), outPort->mac,
-                                EthernetFrame::kARP, req.ToBytes()));
+    outPort->Send(std::make_shared<const EthernetFrame>(
+        Mac::Broadcast(), outPort->mac, EthernetFrame::kARP, req.ToBytes()));
 }

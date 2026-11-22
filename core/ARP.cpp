@@ -16,6 +16,7 @@ bool ARP::operator==(const ARP &msg) const
 std::vector<uint8_t> ARP::ToBytes() const
 {
     std::vector<uint8_t> buf;
+    buf.reserve(kSize);
 
     AppendU16(buf, 0x0001);
     AppendU16(buf, 0x0800);

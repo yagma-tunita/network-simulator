@@ -1,17 +1,19 @@
 #include "Port.hpp"
-#include "Link.hpp"
+#include "../link/Link.hpp"
 #include "Device.hpp"
+#include <utility>
 
-void Port::Send(const EthernetFrame &frame)
+void Port::Send(FramePtr frame)
 {
     if(!link) return;
-    link->Transmit(this, frame);
+    link->Transmit(this, std::move(frame));
 }
 
-void Port::Receive(const EthernetFrame &frame)
+void Port::Receive(FramePtr frame)
 {
+    ++rx;
     if(!owner) return;
-    owner->OnFrame(this, frame);
+    owner->OnFrame(this, std::move(frame));
 }
 
 void Port::SetIp(Ipv4 newip, uint8_t prefix)

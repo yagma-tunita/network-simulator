@@ -1,0 +1,4 @@
+add-device PC1 end
+add-port PC1 aa:aa:aa:aa:aa:01 192.168.1.1/24
+ping PC1 192.168.1.99
+run

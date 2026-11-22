@@ -1,15 +1,16 @@
-# Network Simulator (C++)
+# yanas net
 
-A terminal-based network simulator written in C++17 that models Layer-2 and
-Layer-3 networking: IPv4 addressing and subnets, Ethernet frames, ARP, MAC-
-learning switches, and IPv4 packets. Devices share a common base class and
-communicate through ports connected by point-to-point links, driven by a
-deterministic logical clock.
+<img src="web/logo.svg" alt="yanas net" width="72" align="left">
 
-The code is intentionally small, dependency-free, and readable. Every protocol
-has its own value type with a byte-level codec so it can be carried inside an
-Ethernet frame, which keeps the simulation faithful to how real networks move
-data (a frame carries an ARP message or an IPv4 packet in its payload).
+**yanas net** is a deterministic C++17 network simulator for Layer-2/Layer-3
+study and scenarios: IPv4 subnets, Ethernet frames, ARP, VLAN/802.1Q, MAC-learning
+switches, spanning tree (STP and an RSTP-style rapid mode), static routing, and
+ICMP. It ships as a self-contained native Windows desktop app (`win/`, no browser)
+plus a scriptable CLI and Lua scenario engine, all on a deterministic engine.
+
+The engine runs on a logical clock, wire formats are byte-accurate, and the
+sources are dependency-free and comment-free (all documentation is here and in
+`DEVELOPMENT_LOG.md`). Version: `VERSION` (currently 0.1.0).
 
 ---
 
@@ -25,10 +26,11 @@ data (a frame carries an ARP message or an IPv4 packet in its payload).
 8. [Engine module reference](#engine-module-reference)
 9. [Wire formats](#wire-formats)
 10. [Building](#building)
-11. [Quick start](#quick-start)
-12. [Behavior details](#behavior-details)
-13. [Design notes](#design-notes)
-14. [Status and roadmap](#status-and-roadmap)
+11. [Desktop app (yanas net)](#desktop-app-yanas-net)
+12. [Quick start](#quick-start)
+13. [Behavior details](#behavior-details)
+14. [Design notes](#design-notes)
+15. [Status and roadmap](#status-and-roadmap)
 
 ---
 
@@ -63,7 +65,20 @@ comment-free; all documentation lives in this README and `DEVELOPMENT_LOG.md`.
 - Router behavior: longest-prefix routing table, TTL handling, next-hop ARP,
   MAC-header rewrite, and automatic connected routes per configured port.
 - Shared ARP agent for hosts and routers (time-based cache aging + request/reply).
-- A logical simulation clock for deterministic, time-based behavior.
+- VLAN: port-based isolation on access ports plus 802.1Q trunk tagging across
+  switches, carried in a real TPID/TCI header on the frame.
+- Spanning Tree (STP): 802.1D-style root election and Blocking/Learning/Forwarding
+  port states with forward delay, enabled per switch.
+- STP reconvergence on link up/down (with MAC flush) and per-port rx/tx/drop counters.
+- STP Hello/Max-Age keepalives and an RSTP-style rapid mode (`set-stp-mode`).
+- Frame capture to `.pcap`, JSON topology `save` / `load`, and a bounded `run`.
+- ICMP: echo (ping) with RTT + timeout, Time Exceeded, and Destination Unreachable.
+- Hosts queue outbound traffic behind automatic ARP resolution and keep a gateway.
+- Event-driven, delayed frame delivery with an optional event trace.
+- Engine-owned logical time for deterministic, single-threaded simulation.
+- Makefile (optional Lua via `LUA=1`/pkg-config) and CMake builds.
+- Lua scenario scripting (real Lua 5.4; `exec` / `run` / `log`).
+- A self-contained native Win32 desktop app (`yanasnet.exe`, no browser).
 
 ## Architecture
 
@@ -85,7 +100,7 @@ The project is layered; each layer depends only on lower layers.
 |                EthernetFrame  ARP  IpPacket                  |
 |                ByteIO (big-endian codec)  Aging (map aging)   |
 +--------------------------------------------------------------+
-| engine layer   SimClock (logical time)                       |
+| engine layer   Clock (time iface)  Engine (queue + time)     |
 +--------------------------------------------------------------+
 ```
 
@@ -100,16 +115,19 @@ Object relationships:
 
 ## Frame flow
 
-Transmission is a straight pipeline; every device type only implements
-`OnFrame`.
+Transmission is an event-driven, delayed pipeline. Frames travel as `FramePtr`
+(`std::shared_ptr<const EthernetFrame>`), so forwarding and flooding share one
+immutable frame instead of copying payloads.
 
 ```
-1. A device builds an EthernetFrame (dst MAC, src MAC, type, payload).
-2. device -> port->Send(frame)
-3. Port::Send          -> link->Transmit(this, frame)
-4. Link::Transmit      -> peerPort->Receive(frame)      (the *other* endpoint)
-5. Port::Receive       -> owner->OnFrame(this, frame)   (virtual dispatch)
-6. Device::OnFrame     -> inspect frame.type and handle (e.g. ARP, IPv4)
+1. A device builds a frame: make_shared<const EthernetFrame>(...).
+2. device -> port->Send(FramePtr)
+3. Port::Send       -> link->Transmit(this, FramePtr)
+4. Link::Transmit   -> scheduler->ScheduleAfter(delay, FrameDelivery{peer, FramePtr})
+                       (no scheduler set -> synchronous fallback: peer->Receive)
+5. Engine advances the clock to the event time, then FrameDelivery::Execute
+6. Port::Receive    -> owner->OnFrame(this, FramePtr)   (virtual dispatch)
+7. Device::OnFrame  -> inspect frame->type and handle (ARP, IPv4)
 ```
 
 Because `Port::Receive` calls `owner->OnFrame`, and `owner` is a `Device*`, a
@@ -121,7 +139,8 @@ does no protocol logic; it only moves frames between the device and the link.
 ```
 Internet/
 ├── .vscode/                 # VS Code IntelliSense configuration
-├── app/                     # CLI / application entry point (planned)
+├── app/
+│   └── main.cpp             # CLI: interactive + file-driven simulation
 ├── core/                    # protocol data types
 │   ├── ByteIO.hpp           # big-endian read/write helpers (header-only)
 │   ├── Aging.hpp            # generic map-entry aging helper (header-only)
@@ -135,14 +154,34 @@ Internet/
 │   ├── Device.hpp / .cpp    # abstract base
 │   ├── ArpAgent.hpp / .cpp  # shared ARP cache + request/reply
 │   ├── EndDevice.hpp / .cpp # host
-│   ├── Switch.hpp / .cpp    # Layer-2 switch
+│   ├── Switch.hpp / .cpp    # Layer-2 switch (+ STP)
+│   ├── StpBpdu.hpp / .cpp   # 802.1D Configuration BPDU codec
 │   ├── Router.hpp / .cpp    # Layer-3 router
-│   ├── Port.hpp / .cpp
-│   └── Link.hpp / .cpp
+│   ├── FrameDelivery.hpp / .cpp # frame-delivery event
+│   └── Port.hpp / .cpp
 ├── engine/                  # simulation engine
-│   └── SimClock.hpp         # logical clock (header-only)
-├── link/                    # reserved (planned)
-├── topo/                    # reserved (planned)
+│   ├── Clock.hpp            # time source interface (header-only)
+│   ├── Event.hpp / .cpp     # event base
+│   ├── EventQueue.hpp / .cpp# ordered event queue
+│   ├── Scheduler.hpp        # narrow scheduling interface
+│   └── Engine.hpp / .cpp    # runtime: event queue + time
+├── link/                    # link layer
+│   └── Link.hpp / .cpp      # point-to-point wire (event-driven, delayed)
+├── topo/                    # topology assembly + commands
+│   ├── Topology.hpp / .cpp  # model + builder (owns devices/ports/links)
+│   ├── TopoCommand.hpp / .cpp   # command parser/interpreter
+│   └── CommandRunner.hpp / .cpp # shared line runner (CLI + Lua)
+├── script/                  # Lua scripting bridge (optional, LUA=1)
+│   └── LuaScript.hpp / .cpp # exposes exec/run/log to Lua 5.4
+├── tests/                   # unit, fuzz, and scenario tests
+│   ├── unit/unit_tests.cpp  # codec/addressing unit tests
+│   ├── fuzz_parsers.cpp     # deterministic parser fuzzing
+│   ├── run_tests.sh         # scenario runner
+│   └── *.txt / *.want
+├── Makefile                 # build system (make -> netsim)
+├── CMakeLists.txt           # alternative CMake build
+├── .github/workflows/ci.yml # CI (gcc/clang matrix, make test)
+├── .clang-tidy              # static-analysis config
 ├── .gitignore
 ├── README.md
 └── DEVELOPMENT_LOG.md
@@ -213,13 +252,56 @@ A Layer-2 frame. The payload is opaque bytes so any protocol can ride inside.
 | Member | Description |
 |--------|-------------|
 | `Mac dst`, `Mac src` | destination / source MAC |
-| `uint16_t type` | EtherType |
+| `uint16_t type` | inner EtherType (0x0800 / 0x0806) |
 | `std::vector<uint8_t> payload` | carried bytes |
+| `bool hasVlanTag`, `uint16_t vlanId`, `uint8_t vlanPcp`, `bool vlanDei` | optional 802.1Q tag (VID / PCP / DEI) |
+| `WithVlan(vid, pcp, dei)` / `WithoutVlan()` | return a copy with the tag set / cleared |
+| `std::vector<uint8_t> ToBytes() const` | real wire bytes (inserts TPID `0x8100` + TCI when tagged) |
+| `static bool TryFromBytes(...)` | parse wire bytes, recognizing the 802.1Q header |
+| `static constexpr uint16_t kVlanTpid = 0x8100` | 802.1Q TPID |
 | `static constexpr uint16_t kIPv4 = 0x0800` | IPv4 EtherType |
 | `static constexpr uint16_t kARP  = 0x0806` | ARP EtherType |
 | `bool IsBroadcast() const` | `dst == Mac::Broadcast()` |
-| `bool operator== const` | compares all fields incl. payload |
-| `std::string ToString() const` | debug form |
+| `bool operator== const` | compares all fields incl. tag + payload |
+| `std::string ToString() const` | debug form (shows `vlan=<id>` when tagged) |
+
+`FramePtr = std::shared_ptr<const EthernetFrame>` is the shared, immutable handle
+passed across the pipeline; forwarding and flooding share one frame.
+
+A tagged frame serializes as `[dst][src][0x8100][TCI][inner EtherType][payload]`
+— the real 802.1Q layout; an untagged frame is `[dst][src][EtherType][payload]`.
+
+### VLAN / 802.1Q
+
+- Access port: untagged; a frame's VLAN is the port's PVID (`set-vlan`).
+- Trunk port: tagged; egress frames carry an 802.1Q header and the ingress VLAN is
+  read from the tag (untagged ingress maps to the native VLAN, `set-trunk <port> [vid]`).
+- The switch forwards only within the ingress VLAN and rewrites the tag on egress
+  (push on a trunk, pop on an access port). Ports left at VID 0 share one L2 segment.
+
+### Spanning Tree (STP)
+
+- Per-switch, opt-in via `set-stp <switch> on` (off by default so non-STP scenes
+  are unchanged).
+- Classic 802.1D idea: bridges exchange Configuration BPDUs (`StpBpdu`, a 35-byte
+  codec) carrying root ID, root path cost, and sender bridge/port ID. The lowest
+  bridge ID wins the root election; every other bridge picks a root port, and the
+  ports that would close a loop become Blocking (they neither forward nor learn).
+- Bridge ID = `<priority>:<mac>`; priority defaults to 32768
+  (`set-bridge <switch> <prio>`); the bridge MAC is the lowest port MAC.
+- `stp-status <switch>` prints the root/cost plus each port's forwarding/blocking
+  state.
+- Ports step Blocking -> Listening -> Learning -> Forwarding through the forward
+  delay (per-port timers); `stp-status` shows the live state.
+- Link failure/recovery: `set-link <dev:idx> down|up` disables the wire, clears the
+  affected BPDU state, flushes the MAC table, and re-runs the election, so the tree
+  re-converges over the alternate path.
+- Periodic Hello BPDUs refresh the topology; Max-Age expires stale neighbor info.
+- `set-stp-mode <switch> rstp` selects a rapid (immediate-forwarding) mode. This is
+  an RSTP-style subset (rapid transition + version-2 BPDUs), not full 802.1w
+  proposal/agreement.
+- BPDUs ride a private EtherType (`0x8E01`) instead of the real LLC/SNAP
+  encapsulation.
 
 ### `ARP` — `core/ARP.hpp`
 
@@ -294,7 +376,7 @@ expected to have a `uint64_t lastSeen` member; `now` is passed in by the caller
 |--------|-------------|
 | `std::vector<Port*> portList` | owned interfaces |
 | `virtual void AddPort(Port*)` | register a port (Router overrides to add connected routes) |
-| `virtual void OnFrame(Port*, const EthernetFrame&) = 0` | per-device handling |
+| `virtual void OnFrame(Port*, FramePtr) = 0` | per-device handling |
 | `virtual ~Device() = default` | polymorphic destruction |
 | (copy deleted) | non-copyable polymorphic base (prevents slicing) |
 
@@ -319,7 +401,7 @@ handling.
 | Member | Description |
 |--------|-------------|
 | `ArpAgent arp` | ARP cache + handling |
-| `void OnFrame(Port*, const EthernetFrame&) override` | filter, then dispatch ARP |
+| `void OnFrame(Port*, FramePtr) override` | filter, then dispatch ARP |
 | `void SendArpRequest(Ipv4 targetIp)` | pick egress port, then ARP request |
 | `bool Lookup(Ipv4, Mac&)` | query the ARP cache |
 
@@ -331,7 +413,7 @@ handling.
 | `ArpAgent arp` | next-hop ARP resolution |
 | `std::vector<Route> routeTable` | routing table |
 | `void AddPort(Port*) override` | add port; auto-add a direct route when it has an IP |
-| `void OnFrame(Port*, const EthernetFrame&) override` | ARP + IPv4 forwarding |
+| `void OnFrame(Port*, FramePtr) override` | ARP + IPv4 forwarding |
 | `void AddRoute(Ipv4Subnet, Ipv4 nextHop, bool direct)` / `AddRoute(const Route&)` | add routes |
 | `const Route* FindRoute(Ipv4) const` | longest-prefix match |
 | `bool IsMyIp(Ipv4) const` | whether an IP belongs to a local port |
@@ -343,10 +425,15 @@ handling.
 |--------|-------------|
 | `struct Entry { Port* port; uint64_t lastSeen; }` | one MAC-table entry |
 | `static constexpr uint64_t kAgingTimeout = 300` | aging threshold (clock units) |
-| `std::map<Mac, Entry> macTable` | MAC → port + timestamp |
-| `void OnFrame(Port*, const EthernetFrame&) override` | learn, flood, forward |
-| `void Flood(Port* except, const EthernetFrame&)` | send to all ports except one |
+| `std::map<std::pair<uint16_t, Mac>, Entry> macTable` | (VLAN, MAC) → port + timestamp |
+| `void OnFrame(Port*, FramePtr) override` | STP / learn / flood / forward with port-state gating |
+| `void Emit(Port*, uint16_t vid, FramePtr)` | per-port egress: 802.1Q push/pop + STP gate |
+| `void Flood(Port* except, uint16_t vlan, FramePtr)` | send within a VLAN except the ingress |
 | `void AgeOut(uint64_t now)` | evict stale entries |
+| `SetStpEnabled` / `SetBridgePriority` | enable 802.1D STP / set bridge priority |
+| `RecomputeStp` / `HandleBpdu` / `SendBpdu` | root election, port roles, BPDU exchange |
+| `stpRootMac`, `stpRootCost`, `stpRootPort` | current root view |
+| `void PrintStp() const` | dump root + per-port forwarding/blocking |
 
 ### `Port` — `device/Port.hpp` (interface)
 
@@ -357,39 +444,47 @@ handling.
 | `Ipv4 ip`, `Ipv4Subnet subnet` | L3 address / subnet (when `hasIp`) |
 | `Link* link` | attached link (nullptr if unconnected) |
 | `Device* owner` | owning device |
-| `void Send(const EthernetFrame&)` | hand a frame to the link |
-| `void Receive(const EthernetFrame&)` | hand a received frame to the device |
+| `void Send(FramePtr)` | hand a frame to the link |
+| `void Receive(FramePtr)` | hand a received frame to the device |
 | `void SetIp(Ipv4, uint8_t prefix)` | configure L3 address + subnet |
 | `void Attach(Link*)` | bind to a link |
 | `Port(Mac, Device*, Ipv4, uint8_t prefix, Link*)` | full constructor |
 
 Switch ports typically have `hasIp == false`; host/router ports carry an address.
 
-### `Link` — `device/Link.hpp` (point-to-point wire)
+### `Link` — `link/Link.hpp` (point-to-point wire)
 
 | Member | Description |
 |--------|-------------|
 | `Port* A`, `Port* B` | the two endpoints |
 | `Link(Port*, Port*)` | connect, and make both ports point back at this link |
-| `void Transmit(Port* from, const EthernetFrame&)` | forward to the other endpoint |
+| `void Transmit(Port* from, FramePtr)` | schedule a delayed delivery to the other endpoint |
 | `Port* Other(Port* from) const` | the endpoint opposite `from` (or nullptr) |
 | `bool IsConnected() const` | both endpoints present |
 
 ## Engine module reference
 
-### `SimClock` — `engine/SimClock.hpp` (logical clock)
+### `Clock` — `engine/Clock.hpp`
 
-```
-namespace SimClock {
-    uint64_t Now();
-    void     Advance(uint64_t delta);
-    void     Reset();
-}
-```
+A minimal time source: `virtual uint64_t Now() const = 0`. The `Engine` owns the
+simulated time and implements `Clock`. Devices are given a `Clock*` via
+`Device::SetClock` (and `ArpAgent` via its own `SetClock`), so no global clock is
+used; each simulation is self-contained and deterministic.
 
-A single monotonic counter advanced by the engine (or by a test). Time-dependent
-behavior such as MAC-table aging reads `Now()`, so results are reproducible and
-do not depend on wall-clock time.
+### `Event` / `EventQueue` / `Scheduler` — `engine/`
+
+- `Event` — abstract event with `time`, `seq`, `Execute(Engine&)`, `Name()`.
+- `EventQueue` — `priority_queue<unique_ptr<Event>>` ordered by `(time, seq)`;
+  `Push` / `Pop` / `Top` / `Clear` / `Empty` / `Size`.
+- `Scheduler` — narrow interface (`ScheduleAfter`) so `Link` can schedule delayed
+  deliveries without depending on the whole engine.
+
+### `Engine` — `engine/Engine.hpp`
+
+Owns the event queue and the simulated clock; implements `Scheduler` and `Clock`;
+advances the clock as it processes events (single-threaded, deterministic).
+Scenario-level parallelism runs one independent engine per thread, never threads
+inside one event loop.
 
 ## Wire formats
 
@@ -425,16 +520,213 @@ do not depend on wall-clock time.
 
 ## Building
 
-No build system is included yet; the sources are plain C++17. Compile every
-module to object files:
+Build with the Makefile:
 
 ```sh
-g++ -std=c++17 -Wall -Wextra -c core/*.cpp device/*.cpp
+make            # -> ./netsim  (-Wall -Wextra -Werror)
+make clean
 ```
 
-Or compile a program together with all module sources (see Quick start). Headers
-use relative includes (`"../core/..."`), so no `-I` flags are needed when the
-`.cpp` files are compiled from their own directories.
+The full quality gate runs the unit tests, parser fuzzing, and the scenario suite
+under AddressSanitizer + UndefinedBehaviorSanitizer:
+
+```sh
+make test       # -Werror + ASan/UBSan unit + fuzz + scenario suite
+make san        # unit + fuzz only, with leak detection
+```
+
+Lua scripting is optional and auto-detected via `pkg-config lua5.4` (install
+`liblua5.4-dev` on Debian/Ubuntu). Force it with `make LUA=1` or disable with
+`make LUA=0`; `LUA_CFLAGS` / `LUA_LIBS` override detection.
+
+`make tidy` runs clang-tidy using `.clang-tidy` (advisory; requires clang-tidy).
+
+`make dist` builds the binary and packages `netsim`, `web/`, `win/`, `docs/`,
+and licensing into `dist/yanas-net-<version>.tar.gz`. `make install
+PREFIX=/usr/local` installs `netsim` and `docs/netsim.1`.
+
+Native Windows desktop app (MinGW-w64, no browser):
+
+```sh
+mingw32-make -f Makefile.win   # -> yanasnet.exe
+```
+
+Or with CMake:
+
+```sh
+cmake -S . -B build
+cmake --build build
+```
+
+Or directly with `g++`:
+
+```sh
+g++ -std=c++17 -Wall -Wextra -Werror core/*.cpp device/*.cpp link/*.cpp \
+    engine/*.cpp topo/*.cpp app/main.cpp -o netsim
+```
+
+Headers use relative includes (`"../core/..."`), so no `-I` flags are needed.
+
+## Desktop app (yanas net)
+
+The product UI is a self-contained native **Win32** application — no browser, no
+GUI framework. It embeds the engine in-process and draws the topology with GDI in
+a classic desktop style.
+
+```sh
+mingw32-make -f Makefile.win    # -> yanasnet.exe (MinGW-w64)
+.\yanasnet.exe
+```
+
+The window has a red six-pointed-star logo, a topology canvas, a toolbar
+(New, Open, Save, add host/switch/router, add port, connect, run, step, ping, STP,
+refresh), a live inspector (ports, IP/VLAN, STP state, rx/tx/drop), and a command
+console. Every toolbar action drives the same in-process command interpreter used
+by the CLI. Drag any device on the canvas to move it; links follow live.
+
+Scenes are stored in **`.yn`** files (JSON content) via **File > New / Open /
+Save / Save As**. A scene carries devices, ports, links, STP/routing/gateway
+settings, and the canvas `layout`, so reopening restores the topology *and* node
+positions. `New` reinitializes the engine and clears the scene.
+
+A loopback JSON endpoint (`./netsim --serve [port]`) is also available on POSIX
+for headless/CI use (`/api/state`, `/api/cmd`, `/api/run`, `/api/step`); the
+desktop app does not depend on it.
+
+## Command-line interface
+
+```sh
+./netsim                     # interactive prompt (try `demo`)
+./netsim scene.yn            # load a scene and exit
+./netsim -i scene.yn         # load a scene, then stay interactive
+./netsim script.txt          # run a line-command script
+./netsim script.lua          # run a Lua script (if built with Lua)
+./netsim --serve 8080        # loopback JSON API (headless)
+./netsim --help              # options, file types, examples
+```
+
+Options: `-h/--help`, `--version`, `--features`, `-q/--quiet`,
+`--keep-going`, `--no-lua`, `-i/--interactive`, `--serve [port]`,
+`-f/--file <path>`. Files are chosen by extension: `.yn`/`.json` scene,
+`.lua` script, otherwise a `.txt` line-command script.
+
+Exit codes: `0` success, `1` runtime/script error, `2` usage error. Script
+errors are reported as `file:line: error: ...` and stop at the first error unless
+`--keep-going` is given. Lua scripts run in a restricted sandbox (see Lua
+scripting); `--no-lua` disables them entirely. A man page is in `docs/netsim.1`
+(`make install` installs the binary and the man page).
+
+`new` resets the scene; `demo` builds a sample 2-host + switch scene and pings it,
+so a first run shows a result immediately.
+
+Each line is one command (`#` starts a comment):
+
+```
+add-device <name> end|switch|router
+add-port   <device> <mac> [<ip>/<prefix>]     # no ip = L2 (switch) port
+connect    <dev:idx> <dev:idx> [delay]         # e.g. connect PC1:0 SW1:0
+add-route  <router> <dst/p> <next-hop-ip>      # static routes (connected auto)
+set-vlan   <dev:idx> <vid>                     # access port in VLAN <vid>
+set-trunk  <dev:idx> [native-vid]              # 802.1Q trunk (tagged); native default 1
+set-stp    <switch> on|off                     # enable/disable spanning tree
+set-stp-mode <switch> stp|rstp                 # RSTP-style rapid mode
+set-bridge <switch> <priority>                 # bridge priority (default 32768)
+stp-status <switch>                            # print root + per-port state
+set-link   <dev:idx> down|up                   # bring a link down/up (STP reconverge)
+stats      <device>                            # per-port rx/tx/drop counters
+set-gateway <device> <gw-ip>                   # default gateway for a host
+arp        <device> <target-ip>                # inject an ARP request
+ping       <device> <target-ip> [ttl]          # ICMP echo (auto-ARP, RTT)
+run [duration] | step [n] | trace on|off       # bounded run / step / trace
+pcap       <file> | pcap off                    # capture frames to a .pcap file
+save       <file.yn>                            # export scene (.yn, JSON)
+load       <file.yn>                            # build scene from .yn
+lookup     <device> <ip>                       # print the device's ARP entry
+bench      [n]                                 # measure event throughput
+```
+
+Example scene file:
+
+```
+add-device PC1 end
+add-device PC2 end
+add-port PC1 aa:aa:aa:aa:aa:01 192.168.1.1/24
+add-port PC2 aa:aa:aa:aa:aa:02 192.168.1.2/24
+connect PC1:0 PC2:0
+arp PC1 192.168.1.2
+```
+
+In file mode the script controls time: call `run` (or `run <duration>`) where you
+want the engine to advance. There is no implicit final drain.
+
+## Lua scripting
+
+When built with Lua (see Building), a `.lua` file is executed as a scenario. The
+script gets three globals:
+
+| Function | Meaning |
+|----------|---------|
+| `exec(line)` | run one simulator command (same syntax as `.txt` scripts) |
+| `run()` | drain the event queue (the `run` command) |
+| `log(...)` | print its arguments |
+
+Example (`tests/lua_ping.lua`):
+
+```lua
+exec("add-device PC1 end")
+exec("add-device PC2 end")
+exec("add-port PC1 aa:aa:aa:aa:aa:01 192.168.1.1/24")
+exec("add-port PC2 aa:aa:aa:aa:aa:02 192.168.1.2/24")
+exec("connect PC1:0 PC2:0")
+
+for i = 1, 2 do
+    exec("ping PC1 192.168.1.2")
+    run()
+end
+```
+
+Lua adds loops, variables, tables, and conditionals on top of the line commands,
+which is what makes large or parameterized scenarios practical.
+
+Lua runs in a restricted sandbox by default: only the base library (minus
+`dofile`, `load`, `loadfile`, `require`), plus `string`, `table`, `math`, `utf8`,
+and `coroutine` are available. `os`, `io`, `package`, and `debug` are not loaded,
+so scripts cannot spawn processes, open files directly, or load native modules. A
+per-run instruction budget (50M instructions) and a 4 MiB script-size limit stop
+runaway scripts. `--no-lua` disables Lua entirely.
+
+## Capture and configuration
+
+- `pcap <file>` captures every frame transmitted on a link into a standard pcap
+  file (Ethernet link type); `pcap off` stops and reports the frame count.
+- `save <file.yn>` exports the scene (devices, ports, links, STP, routes,
+  gateways) to a `.yn` file (JSON content); `load <file.yn>` replays it. The
+  desktop app also stores canvas positions in `layout`. See `tests/config.yn`.
+- `run [duration]` advances at most `duration` time units (default 1000) or until
+  the queue is empty. The bound keeps periodic STP Hello timers from running
+  forever; scripts must call `run` explicitly (there is no implicit final drain).
+
+## Testing
+
+Three layers of tests, all runnable with `make test`:
+
+- `tests/unit/unit_tests.cpp` — unit tests for the codecs and addressing
+  (`Ipv4`, `Ipv4Subnet`, `Mac`, `ARP`, `IpPacket`, `IcmpMessage`,
+  `EthernetFrame` incl. 802.1Q), built with `-Werror` + ASan/UBSan.
+- `tests/fuzz_parsers.cpp` — deterministic fuzzing of every byte parser; must
+  stay ASan/UBSan-clean.
+- `tests/*.txt` scenarios — each `NAME.txt` is a scene and `NAME.want` a substring
+  the output must contain (the runner also fails on `fatal:` and applies a
+  timeout). Scenarios cover ARP, auto-ARP ping, ping timeout/RTT, TTL exceeded,
+  ICMP unreachable, cross-subnet routing, VLAN isolation, 802.1Q trunking, STP
+  loop prevention / reconvergence after a link flap, port counters, JSON
+  save/load, pcap capture, and RSTP mode.
+- `tests/lua_ping.lua` — a Lua scenario (loop + `exec` + `run`) when Lua is built.
+
+```sh
+make test                 # unit + fuzz (ASan/UBSan) + every scenario
+bash tests/run_tests.sh   # scenarios only
+```
 
 ## Quick start
 
@@ -513,7 +805,7 @@ For every received frame the switch:
 
 Each entry stores `lastSeen`. `OnFrame` calls `AgeOut(now)` before learning, which
 erases entries whose age exceeds `kAgingTimeout`. Learning refreshes `lastSeen`,
-so active stations never expire. Time comes from `SimClock`, keeping runs
+so active stations never expire. Time comes from the engine's `Clock`, keeping runs
 deterministic.
 
 ### Router forwarding
@@ -547,8 +839,12 @@ IP is added (`Router::AddPort`).
 - **Polymorphic devices.** `Device` has a pure virtual `OnFrame` and a virtual
   destructor. Concrete devices implement only their packet handling, so a single
   `Port` works with any device type.
-- **Deterministic time.** `SimClock` is a logical counter; nothing depends on the
-  wall clock.
+- **Engine-owned time.** Each `Engine` owns its clock (implements `Clock`) and
+  advances it while processing events; nothing depends on the wall clock, so runs
+  are reproducible.
+- **Scenario-level parallelism.** Independent simulations run as separate engines
+  (one per thread/process); the core event loop stays single-threaded and no
+  mutable state is shared across simulations.
 - **Shared components.** `ArpAgent` (ARP behavior), `ByteIO` (big-endian codec),
   and `Aging` (map-entry aging) are reused to avoid duplication.
 - **Comment-free sources.** `.cpp` / `.hpp` files contain no comments; all design
@@ -557,6 +853,11 @@ IP is added (`Router::AddPort`).
   prevent slicing; devices are held by pointer.
 - **Encapsulated bit tests.** `Mac::IsGroup()` hides the I/G bit check used by the
   switch for learning and flooding.
+- **Shared immutable frames.** Frames travel as `FramePtr`
+  (`shared_ptr<const EthernetFrame>`); forwarding and flooding share one frame, so
+  the hot path does not copy payloads.
+- **Throttled aging.** The switch sweeps its MAC table at most once every
+  `kSweepInterval`, not on every frame.
 
 ## Status and roadmap
 
@@ -573,16 +874,55 @@ Implemented:
 - [x] Shared `ArpAgent` (time-aged ARP cache)
 - [x] Shared `Aging` helper (`core/Aging.hpp`)
 - [x] Router: ARP pending-packet queue (hold until the next hop resolves)
-- [x] `SimClock` logical clock
+- [x] `Event`, `EventQueue`, `Scheduler`, `Clock` (engine building blocks)
+- [x] `Engine` (event loop + engine-owned time)
+- [x] `FrameDelivery` + event-driven `Link` (delayed delivery)
+- [x] `FramePtr` shared immutable frames (no payload copies on forward/flood)
+- [x] Switch aging throttled (`kSweepInterval`)
+- [x] Topology builder (`topo/`) — owns devices/ports/links, injects clock/scheduler
+- [x] CLI (`app/`) — interactive prompt + `.txt` script, shared command interpreter
+- [x] End-to-end: ARP round trip over the event-driven pipeline
+- [x] VLAN (port-based) + 802.1Q trunk tagging (real TPID/TCI frames)
+- [x] ICMP echo (ping) between hosts
+- [x] Packet/event tracing (`trace on|off`)
+- [x] Makefile build (`make` → `./netsim`)
+- [x] CMake build (`CMakeLists.txt`)
+- [x] Host default gateway — cross-subnet ping through a router
+- [x] Event-throughput benchmark (`bench [n]`; ~5.9M events/s → no pool needed)
+- [x] Regression test suite (`tests/run_tests.sh`)
+- [x] Quality gate: `-Werror`, ASan/UBSan unit tests, deterministic parser fuzzing
+- [x] Bounded resources: router ARP pending cap/timeout, `bench` input clamp
+- [x] Spanning Tree (STP): root election, Blocking/Learning/Forwarding (forward delay)
+- [x] ICMP Time Exceeded / unreachable, ping timeout + RTT, host auto-ARP
+- [x] Lua scripting (real Lua 5.4; `exec` / `run` / `log`)
+- [x] CI (gcc/clang matrix) + `.clang-tidy` config
+- [x] STP link-failure reconvergence (`set-link down|up`) with MAC flush
+- [x] Per-port rx/tx/drop counters (`stats <device>`)
+- [x] STP Hello/Max-Age keepalives + RSTP-style rapid mode
+- [x] pcap frame capture (`pcap <file>` / `pcap off`)
+- [x] JSON topology save/load (`save` / `load`)
+- [x] Bounded `run [duration]` (safe with periodic timers)
+- [x] Makefile header dependency tracking (`-MMD -MP`)
+- [x] Native Win32 desktop app (`win/yanasnet.exe`, no browser) with a draggable
+      topology canvas, toolbar, inspector, and console; red six-pointed-star logo
+- [x] File workflow: New / Open / Save / Save As with `.yn` scenes (JSON + layout)
+- [x] Productized CLI: `--help/--version/--features`, stable exit codes,
+      `file:line` script errors, `--quiet`, `--keep-going`, `-i`, `--no-lua`,
+      direct `.yn` loading, `demo`/`new`, man page (`docs/netsim.1`)
+- [x] Optional loopback JSON endpoint (`--serve`) for headless/CI use
+- [x] `VERSION`, `CHANGELOG.md`, proprietary `LICENSE`, `make dist` packaging
+- [x] Web/API smoke test in the regression suite and CI
 
 Planned:
 
-- [ ] VLAN support
-- [ ] Topology builder (`topo/`) to assemble devices and links
-- [ ] Event-driven engine and packet tracing
-- [ ] CLI application (`app/`) and a build system (Makefile/CMake)
+- [ ] Full IEEE 802.1w proposal/agreement (current RSTP mode is a rapid subset)
+- [ ] clang-tidy enforcement (advisory CI job present; needs tuning / compile DB)
+- [ ] Observability: drop-reason breakdown (counters done)
+- [ ] Event allocator/pool — only if a real workload justifies it (single-thread
+      throughput already far exceeds simulator load)
 
 ---
 
-No license file is included yet. All code is provided as-is for learning and
-experimentation.
+Copyright (c) 2026 yanas. All rights reserved. This is proprietary software; see
+`LICENSE`. The bundled Lua runtime is used under its MIT license when Lua support
+is built.

@@ -1,0 +1,16 @@
+CXX ?= g++
+CXXFLAGS ?= -std=c++17 -Wall -Wextra -O2 -I.
+
+LIB_SRCS := $(wildcard core/*.cpp) $(wildcard device/*.cpp) $(wildcard link/*.cpp) $(wildcard engine/*.cpp) $(wildcard topo/*.cpp)
+WIN_SRC := win/main_win.cpp
+TARGET := yanasnet.exe
+
+.PHONY: all clean
+
+all: $(TARGET)
+
+$(TARGET): $(LIB_SRCS) $(WIN_SRC)
+	$(CXX) $(CXXFLAGS) $(LIB_SRCS) $(WIN_SRC) -o $(TARGET) -mwindows -lgdi32 -luser32 -lcomdlg32
+
+clean:
+	if exist $(TARGET) del /Q $(TARGET)

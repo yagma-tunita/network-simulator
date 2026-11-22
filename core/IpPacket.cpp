@@ -29,6 +29,7 @@ std::vector<uint8_t> IpPacket::ToBytes() const
         throw std::length_error("IpPacket: payload too large");
 
     std::vector<uint8_t>buf;
+    buf.reserve(kHeaderSize + payload.size());
 
     AppendU8(buf, 0x45);
     AppendU8(buf, 0);
