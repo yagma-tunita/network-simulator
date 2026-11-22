@@ -196,6 +196,21 @@ Conventions:
 - Source files are comment-free (all `.cpp` / `.hpp`). All documentation lives in
   `README.md` and this log; code carries no comments.
 
+## Phase 15 — Router pending queue, shared Aging, ARP cache aging (2026-11-20)
+
+- Router: added a per-next-hop pending-packet queue (`map<Ipv4, vector<Pending>>`)
+  with `FlushPending`. When the next-hop MAC is unknown, `OnFrame` now holds the
+  packet and sends an ARP request instead of dropping it; when the reply is
+  learned, `FlushPending` transmits the held packets.
+- Extracted a header-only generic aging helper `core/Aging.hpp`
+  (`AgeOutEntries(table, now, timeout)`), erasing map entries whose
+  `now - lastSeen > timeout`. `now` is passed in (no engine dependency).
+- `ArpAgent`: time-based cache aging via `SimClock`. Entries now hold
+  `mac + lastSeen`; `Learn` upserts and refreshes; `Lookup` drops expired entries
+  and refreshes `lastSeen` on a hit; `HandleArp` calls `AgeOut` first.
+- `Switch`: `AgeOut` now delegates to the shared `AgeOutEntries`.
+- Docs: README updated for `Aging`, ARP cache aging, and the pending queue.
+
 ---
 
 ## Validation approach (2026-11-20)
@@ -211,7 +226,9 @@ modules:
 - Switch topology (3 hosts + 1 switch): flooding, learning, unicast forwarding,
   and MAC-table aging with the logical clock.
 - `Router::IsMyIp` verified with a temporary test (a stub `OnFrame` was needed to
-  satisfy the vtable). Router forwarding (`OnFrame`) is still in progress.
+  satisfy the vtable). Router forwarding, the ARP pending queue, and ARP cache
+  aging are implemented; overall end-to-end testing is deferred to the final
+  integration phase.
 
 ## Lessons / conventions adopted
 

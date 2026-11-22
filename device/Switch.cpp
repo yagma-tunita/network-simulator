@@ -1,5 +1,6 @@
 #include "Switch.hpp"
 #include "Port.hpp"
+#include "../core/Aging.hpp"
 #include "../engine/SimClock.hpp"
 
 void Switch::OnFrame(Port *port, const EthernetFrame &frame)
@@ -31,11 +32,5 @@ void Switch::Flood(Port *except, const EthernetFrame &frame)
 
 void Switch::AgeOut(uint64_t now)
 {
-    for(auto it = macTable.begin(); it != macTable.end(); )
-    {
-        if((now - it->second.lastSeen) > kAgingTimeout)
-            it = macTable.erase(it);
-        else
-            ++it;
-    }
+    AgeOutEntries(macTable, now, kAgingTimeout);
 }

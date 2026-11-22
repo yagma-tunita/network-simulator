@@ -62,7 +62,7 @@ comment-free; all documentation lives in this README and `DEVELOPMENT_LOG.md`.
 - Switch behavior: MAC learning, flooding, unicast forwarding, MAC-table aging.
 - Router behavior: longest-prefix routing table, TTL handling, next-hop ARP,
   MAC-header rewrite, and automatic connected routes per configured port.
-- Shared ARP agent for hosts and routers (cache + request/reply handling).
+- Shared ARP agent for hosts and routers (time-based cache aging + request/reply).
 - A logical simulation clock for deterministic, time-based behavior.
 
 ## Architecture
@@ -83,7 +83,7 @@ The project is layered; each layer depends only on lower layers.
 +--------------------------------------------------------------+
 | core layer     Ipv4  Ipv4Subnet  Mac                         |
 |                EthernetFrame  ARP  IpPacket                  |
-|                ByteIO (big-endian codec helpers)             |
+|                ByteIO (big-endian codec)  Aging (map aging)   |
 +--------------------------------------------------------------+
 | engine layer   SimClock (logical time)                       |
 +--------------------------------------------------------------+
@@ -124,6 +124,7 @@ Internet/
 ├── app/                     # CLI / application entry point (planned)
 ├── core/                    # protocol data types
 │   ├── ByteIO.hpp           # big-endian read/write helpers (header-only)
+│   ├── Aging.hpp            # generic map-entry aging helper (header-only)
 │   ├── Ipv4.hpp / .cpp
 │   ├── Ipv4Subnet.hpp / .cpp
 │   ├── Mac.hpp / .cpp
@@ -268,6 +269,20 @@ ReadU8(buf, off)      ReadU16(buf, off)     ReadIpv4(buf, off)    ReadMac(buf, o
 
 `Read*` functions assume the caller has already validated the buffer length.
 
+### `Aging` — `core/Aging.hpp`
+
+Header-only generic aging helper shared by the switch MAC table and the ARP
+cache:
+
+```
+template <class Table>
+void AgeOutEntries(Table& table, uint64_t now, uint64_t timeout);
+```
+
+Erases entries whose `now - entry.lastSeen > timeout`. The mapped value is
+expected to have a `uint64_t lastSeen` member; `now` is passed in by the caller
+(no dependency on the engine).
+
 ## Device module reference
 
 ### `Device` — `device/Device.hpp` (abstract base)
@@ -281,14 +296,19 @@ ReadU8(buf, off)      ReadU16(buf, off)     ReadIpv4(buf, off)    ReadMac(buf, o
 
 ### `ArpAgent` — `device/ArpAgent.hpp` (shared ARP)
 
-Used by both `EndDevice` and `Router`; owns the cache and request/reply handling.
+Used by both `EndDevice` and `Router`; owns a time-aged cache and request/reply
+handling.
 
 | Member | Description |
 |--------|-------------|
-| `std::map<Ipv4, Mac> cache` | IP → MAC cache |
-| `bool Lookup(Ipv4, Mac&) const` | query the cache |
-| `void HandleArp(Port*, const EthernetFrame&)` | answer requests / learn replies |
+| `struct Entry { Mac mac; uint64_t lastSeen; }` | one cache entry |
+| `static constexpr uint64_t kTimeout = 300` | cache timeout (clock units) |
+| `std::map<Ipv4, Entry> cache` | IP → (MAC, lastSeen) |
+| `bool Lookup(Ipv4, Mac&)` | query; refreshes `lastSeen`, drops expired entries |
+| `void HandleArp(Port*, const EthernetFrame&)` | age, answer requests, learn replies |
 | `void SendArpRequest(Ipv4 targetIp, Port* outPort)` | broadcast a request out of a port |
+| `void Learn(Ipv4, const Mac&)` | upsert a mapping and refresh `lastSeen` |
+| `void AgeOut(uint64_t now)` | evict stale entries (via `AgeOutEntries`) |
 
 ### `EndDevice` — `device/EndDevice.hpp` (host)
 
@@ -503,8 +523,10 @@ For a received frame the router:
    a longest-prefix lookup in the routing table. The next hop is the destination
    itself for `direct` routes, else `route.nextHop`. The egress port is the one
    whose subnet contains the next hop. If the next-hop MAC is unknown, the router
-   sends an ARP request and drops the packet; otherwise it rewrites the Ethernet
-   header (destination = next-hop MAC, source = egress port MAC) and transmits.
+   holds the packet in a per-next-hop pending queue and sends an ARP request; once
+   the ARP reply is learned, `FlushPending` sends the held packets. Otherwise it
+   rewrites the Ethernet header (destination = next-hop MAC, source = egress port
+   MAC) and transmits.
 
 Connected subnets are added automatically as `direct` routes when a port with an
 IP is added (`Router::AddPort`).
@@ -523,8 +545,8 @@ IP is added (`Router::AddPort`).
   `Port` works with any device type.
 - **Deterministic time.** `SimClock` is a logical counter; nothing depends on the
   wall clock.
-- **Shared components.** `ArpAgent` (ARP behavior) and `ByteIO` (big-endian codec)
-  are reused to avoid duplication.
+- **Shared components.** `ArpAgent` (ARP behavior), `ByteIO` (big-endian codec),
+  and `Aging` (map-entry aging) are reused to avoid duplication.
 - **Comment-free sources.** `.cpp` / `.hpp` files contain no comments; all design
   and behavior documentation lives in this README and `DEVELOPMENT_LOG.md`.
 
@@ -540,13 +562,13 @@ Implemented:
 - [x] `Switch` (learning, flooding, forwarding, aging)
 - [x] `Router` (longest-prefix routing, TTL, next-hop ARP, MAC rewrite,
       automatic connected routes)
-- [x] Shared `ArpAgent`
+- [x] Shared `ArpAgent` (time-aged ARP cache)
+- [x] Shared `Aging` helper (`core/Aging.hpp`)
+- [x] Router: ARP pending-packet queue (hold until the next hop resolves)
 - [x] `SimClock` logical clock
 
 Planned:
 
-- [ ] Router: ARP pending-packet queue (hold packets until the next hop resolves)
-- [ ] Router: ARP cache aging
 - [ ] VLAN support
 - [ ] Topology builder (`topo/`) to assemble devices and links
 - [ ] Event-driven engine and packet tracing

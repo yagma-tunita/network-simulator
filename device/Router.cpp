@@ -1,6 +1,5 @@
 #include "Router.hpp"
 #include "Port.hpp"
-#include "../core/IpPacket.hpp"
 
 Route::Route(const Ipv4Subnet &dst, const Ipv4 &nextHop, bool direct)
     : dst(dst), nextHop(nextHop), direct(direct)
@@ -13,6 +12,70 @@ void Router::AddPort(Port *p)
     Device::AddPort(p);
     if(p->hasIp)
         AddRoute(p->subnet, Ipv4::Any(), true);
+}
+
+void Router::OnFrame(Port *port, const EthernetFrame &frame)
+{
+    if(!port) return;
+
+    if((port->mac != frame.dst) && !frame.IsBroadcast()) return;
+
+    if(frame.type == EthernetFrame::kARP)
+    {
+        arp.HandleArp(port, frame);
+        FlushPending();
+        return;
+    }
+
+    if(frame.type != EthernetFrame::kIPv4) return;
+
+    IpPacket pkt;
+    if(!IpPacket::TryFromBytes(frame.payload, pkt)) return;
+
+    if(IsMyIp(pkt.dstIp)) return;
+
+    if(pkt.ttl <= 1) return;
+    pkt.DecTtl();
+
+    const Route* r = FindRoute(pkt.dstIp);
+    if(!r) return;
+
+    Ipv4 nextIp = r->direct ? pkt.dstIp : r->nextHop;
+
+    Port* egress = PortForNextHop(nextIp);
+    if(!egress) return;
+
+    Mac nextMac;
+    if(!arp.Lookup(nextIp, nextMac))
+    {
+        pending[nextIp].push_back(Pending{egress, pkt});
+        arp.SendArpRequest(nextIp, egress);
+        return;
+    }
+
+    EthernetFrame out(nextMac, egress->mac, EthernetFrame::kIPv4, pkt.ToBytes());
+    egress->Send(out);
+}
+
+void Router::FlushPending()
+{
+    for(auto it = pending.begin(); it != pending.end(); )
+    {
+        const Ipv4& ip = it->first;
+        std::vector<Pending>& list = it->second;
+
+        Mac mac;
+        if(arp.Lookup(ip, mac))
+        {
+            for(const Pending& pd : list)
+            {
+                pd.egress->Send(EthernetFrame(mac, pd.egress->mac, EthernetFrame::kIPv4, pd.pkt.ToBytes()));
+            }
+            it = pending.erase(it); 
+        }
+        else
+            ++it;
+    }
 }
 
 bool Router::IsMyIp(Ipv4 ip) const
@@ -61,59 +124,4 @@ Port *Router::PortForNextHop(const Ipv4 &ip)
     return nullptr;
 }
 
-void Router::OnFrame(Port *port, const EthernetFrame &frame)
-{
-    if (!port)
-        return;
 
-    if (port->mac != frame.dst && !frame.IsBroadcast())
-        return;
-
-    if (frame.type == EthernetFrame::kARP)
-    {
-        arp.HandleArp(port, frame);
-        return;
-    }
-
-
-    if (frame.type != EthernetFrame::kIPv4)
-        return;
-
-    IpPacket pkt;
-    if (!IpPacket::TryFromBytes(frame.payload, pkt))
-        return;
-
-
-    if (IsMyIp(pkt.dstIp))
-        return;
-
-
-    if (pkt.ttl <= 1)
-        return;
-    pkt.DecTtl();
-
-
-    const Route *r = FindRoute(pkt.dstIp);
-    if (!r)
-        return;
-
-
-    Ipv4 nextIp = r->direct ? pkt.dstIp : r->nextHop;
-
-
-    Port *egress = PortForNextHop(nextIp);
-    if (!egress)
-        return;
-
-
-    Mac nextMac;
-    if (!arp.Lookup(nextIp, nextMac))
-    {
-        arp.SendArpRequest(nextIp, egress);
-        return;
-    }
-
-
-    EthernetFrame out(nextMac, egress->mac, EthernetFrame::kIPv4, pkt.ToBytes());
-    egress->Send(out);
-}
