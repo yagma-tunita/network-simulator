@@ -1,5 +1,6 @@
 #include "IpPacket.hpp"
 #include "ByteIO.hpp"
+#include <stdexcept>
 
 using namespace ByteIO;
 
@@ -24,11 +25,14 @@ std::string IpPacket::ToString() const
 
 std::vector<uint8_t> IpPacket::ToBytes() const
 {
+    if(payload.size() > 65535u - kHeaderSize)
+        throw std::length_error("IpPacket: payload too large");
+
     std::vector<uint8_t>buf;
 
     AppendU8(buf, 0x45);
     AppendU8(buf, 0);
-    AppendU16(buf, uint16_t(20 + payload.size()));
+    AppendU16(buf, uint16_t(kHeaderSize + payload.size()));
     AppendU16(buf, 0);
     AppendU16(buf, 0);
     AppendU8(buf, ttl);
@@ -44,13 +48,16 @@ std::vector<uint8_t> IpPacket::ToBytes() const
 
 bool IpPacket::TryFromBytes(const std::vector<uint8_t> &buf, IpPacket &out)
 {
-    if(buf.size() < 20 || buf.front() != 0x45)return false;
+    if(buf.size() < kHeaderSize || buf.front() != 0x45)return false;
+
+    uint16_t total = ReadU16(buf, 2);
+    if(total < kHeaderSize || total > buf.size())return false;
 
     out.ttl = ReadU8(buf, 8);
     out.protocol = ReadU8(buf, 9);
     out.srcIp = ReadIpv4(buf, 12);
     out.dstIp = ReadIpv4(buf, 16);
-    out.payload = std::vector<uint8_t>(buf.begin() + 20, buf.end());
+    out.payload = std::vector<uint8_t>(buf.begin() + kHeaderSize, buf.begin() + total);
 
     return true;
 }

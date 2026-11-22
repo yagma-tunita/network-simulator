@@ -76,6 +76,8 @@ bool Mac::operator<(const Mac &m) const
     return false;
 }
 
+bool Mac::IsGroup() const { return (bytes[0] & 0x01) != 0; }
+
 bool Mac::TryParse(const std::string &s, Mac &out){ return ParseMac(s, out);}
 
 std::string Mac::ToString() const

@@ -5,6 +5,7 @@
 #include "../core/Ipv4.hpp"
 #include "../core/Ipv4Subnet.hpp"
 #include "../core/IpPacket.hpp"
+#include <map>
 #include <vector>
 
 struct Port;

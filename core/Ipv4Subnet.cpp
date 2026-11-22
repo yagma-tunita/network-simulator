@@ -1,7 +1,6 @@
 #include "Ipv4Subnet.hpp"
 #include <cstddef>
 #include <stdexcept>
-#include <cctype>
 
 namespace
 {
@@ -41,7 +40,7 @@ bool Ipv4Subnet::TryParse(const std::string &s, Ipv4Subnet &out)
     int p = 0;
     for(char c : right)
     {
-        if(!isdigit(c)) return false;
+        if(c < '0' || c > '9') return false;
         p = p * 10 + (c - '0');
         if(p > 32) return false;
     }

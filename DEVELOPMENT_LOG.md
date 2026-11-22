@@ -211,6 +211,27 @@ Conventions:
 - `Switch`: `AgeOut` now delegates to the shared `AgeOutEntries`.
 - Docs: README updated for `Aging`, ARP cache aging, and the pending queue.
 
+## Phase 16 — Codebase review and hardening (2026-11-20)
+
+- Reviewed every source file against a commercial-quality bar and applied
+  targeted, non-cosmetic fixes:
+  - `Ipv4Subnet`: replaced `std::isdigit` (undefined behavior for negative
+    `char`) with an explicit `'0'..'9'` range check; removed the unused
+    `<cctype>` include.
+  - `IpPacket`: `TryFromBytes` now validates the 16-bit total-length field and
+    slices the payload to it; `ToBytes` throws `std::length_error` if the payload
+    would overflow the total-length field. Added `<cstddef>` for `size_t`.
+  - `Mac`: added `IsGroup()` (I/G bit); `Switch` now uses it instead of raw
+    `& 0x01` bit twiddling.
+  - `Device`: deleted its copy operations to prevent slicing of the polymorphic
+    base (devices are held by pointer).
+  - `Aging`: use `++it` instead of `it++`.
+  - Self-sufficient includes: `<cstddef>` in `IpPacket.hpp`, `<map>` in
+    `Router.hpp`.
+- Verified: all core + device sources compile with `-Wall -Wextra`, zero warnings.
+- Docs: README updated (Mac::IsGroup, IpPacket length validation, non-copyable
+  Device, review notes).
+
 ---
 
 ## Validation approach (2026-11-20)

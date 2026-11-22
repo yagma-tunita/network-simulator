@@ -11,6 +11,6 @@ void AgeOutEntries(Table &table, uint64_t now, uint64_t timeout)
         if((now - it->second.lastSeen) > timeout)
             it = table.erase(it);
         else
-            it++;
+            ++it;
     }
 }

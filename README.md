@@ -200,6 +200,7 @@ A 48-bit MAC address stored as `uint8_t bytes[6]`.
 | `static bool TryParse(const std::string&, Mac&)` | accepts `aa:bb:cc:dd:ee:ff`, `-`, or continuous hex |
 | `std::string ToString() const` | lowercase, colon-separated |
 | `bool operator== / != / <` | byte-wise lexicographic ordering |
+| `bool IsGroup() const` | I/G bit test: first octet LSB (group/multicast) |
 | `static Mac Zero()` / `Broadcast()` | `00:00:00:00:00:00` / `ff:ff:ff:ff:ff:ff` |
 
 The least-significant bit of the first octet is the I/G bit (1 = group address);
@@ -255,7 +256,9 @@ An IPv4 packet with a simplified (but standard-shaped) 20-byte header.
 
 The checksum, identification, flags, and options are not modeled (set to 0);
 version/IHL are fixed to `0x45` (IPv4, 20-byte header). This is sufficient for
-routing logic and keeps the codec simple.
+routing logic and keeps the codec simple. `ToBytes` throws `std::length_error` if
+the payload would overflow the 16-bit total length; `TryFromBytes` validates the
+total-length field before slicing the payload.
 
 ### `ByteIO` — `core/ByteIO.hpp`
 
@@ -293,6 +296,7 @@ expected to have a `uint64_t lastSeen` member; `now` is passed in by the caller
 | `virtual void AddPort(Port*)` | register a port (Router overrides to add connected routes) |
 | `virtual void OnFrame(Port*, const EthernetFrame&) = 0` | per-device handling |
 | `virtual ~Device() = default` | polymorphic destruction |
+| (copy deleted) | non-copyable polymorphic base (prevents slicing) |
 
 ### `ArpAgent` — `device/ArpAgent.hpp` (shared ARP)
 
@@ -549,6 +553,10 @@ IP is added (`Router::AddPort`).
   and `Aging` (map-entry aging) are reused to avoid duplication.
 - **Comment-free sources.** `.cpp` / `.hpp` files contain no comments; all design
   and behavior documentation lives in this README and `DEVELOPMENT_LOG.md`.
+- **Non-copyable polymorphic base.** `Device` deletes its copy operations to
+  prevent slicing; devices are held by pointer.
+- **Encapsulated bit tests.** `Mac::IsGroup()` hides the I/G bit check used by the
+  switch for learning and flooding.
 
 ## Status and roadmap
 

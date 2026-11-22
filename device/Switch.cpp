@@ -8,10 +8,10 @@ void Switch::OnFrame(Port *port, const EthernetFrame &frame)
     uint64_t now = SimClock::Now();
     AgeOut(now);
 
-    if((frame.src.bytes[0] & 0x01) == 0)
+    if(!frame.src.IsGroup())
         macTable[frame.src] = Entry{ port, now };
 
-    if((frame.dst.bytes[0] & 0x01) != 0)
+    if(frame.dst.IsGroup())
     {
         Flood(port, frame);
         return;

@@ -10,6 +10,7 @@ struct Mac
     bool operator==(const Mac &m)const;
     bool operator!=(const Mac &m)const;
     bool operator<(const Mac &m)const;
+    bool IsGroup() const;
     std::string ToString()const;
 
     static bool TryParse(const std::string &s, Mac &out);
