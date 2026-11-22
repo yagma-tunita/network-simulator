@@ -13,5 +13,6 @@ HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM, OUT OF
 OR IN CONNECTION WITH THE SOFTWARE.
 
 NOTE: This text is a placeholder to be replaced with a license reviewed by legal
-counsel before any distribution or sale. If Lua support is built, the Lua runtime
-is distributed under its own MIT license and must be attributed accordingly.
+counsel before any distribution or sale. Third-party components: Lua 5.4.6 is
+bundled under the MIT license; see THIRD_PARTY_NOTICES.md and
+third_party/lua/LICENSE. That notice must be shipped with the product.

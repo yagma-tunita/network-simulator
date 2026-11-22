@@ -5,8 +5,9 @@
 **yanas net** is a deterministic C++17 network simulator for Layer-2/Layer-3
 study and scenarios: IPv4 subnets, Ethernet frames, ARP, VLAN/802.1Q, MAC-learning
 switches, spanning tree (STP and an RSTP-style rapid mode), static routing, and
-ICMP. It ships as a self-contained native Windows desktop app (`win/`, no browser)
-plus a scriptable CLI and Lua scenario engine, all on a deterministic engine.
+ICMP. It is a **terminal-first, scriptable tool for technical users**: an
+interactive CLI plus `.txt`/`.lua`/`.yn` inputs and bundled Lua, all on a
+deterministic engine. (Former GUI and web front ends are archived under `legacy/`.)
 
 The engine runs on a logical clock, wire formats are byte-accurate, and the
 sources are dependency-free and comment-free (all documentation is here and in
@@ -26,11 +27,10 @@ sources are dependency-free and comment-free (all documentation is here and in
 8. [Engine module reference](#engine-module-reference)
 9. [Wire formats](#wire-formats)
 10. [Building](#building)
-11. [Desktop app (yanas net)](#desktop-app-yanas-net)
-12. [Quick start](#quick-start)
-13. [Behavior details](#behavior-details)
-14. [Design notes](#design-notes)
-15. [Status and roadmap](#status-and-roadmap)
+11. [Quick start](#quick-start)
+12. [Behavior details](#behavior-details)
+13. [Design notes](#design-notes)
+14. [Status and roadmap](#status-and-roadmap)
 
 ---
 
@@ -78,7 +78,8 @@ comment-free; all documentation lives in this README and `DEVELOPMENT_LOG.md`.
 - Engine-owned logical time for deterministic, single-threaded simulation.
 - Makefile (optional Lua via `LUA=1`/pkg-config) and CMake builds.
 - Lua scenario scripting (real Lua 5.4; `exec` / `run` / `log`).
-- A self-contained native Win32 desktop app (`yanasnet.exe`, no browser).
+- Editing/automation: `remove-device`/`remove-port`/`disconnect`/`rename-device`/
+  `set-ip`, `state` JSON snapshots, and Ctrl-C to interrupt a long run.
 
 ## Architecture
 
@@ -171,13 +172,14 @@ Internet/
 │   ├── Topology.hpp / .cpp  # model + builder (owns devices/ports/links)
 │   ├── TopoCommand.hpp / .cpp   # command parser/interpreter
 │   └── CommandRunner.hpp / .cpp # shared line runner (CLI + Lua)
-├── script/                  # Lua scripting bridge (optional, LUA=1)
+├── script/                  # bundled Lua bridge (static)
 │   └── LuaScript.hpp / .cpp # exposes exec/run/log to Lua 5.4
 ├── tests/                   # unit, fuzz, and scenario tests
 │   ├── unit/unit_tests.cpp  # codec/addressing unit tests
 │   ├── fuzz_parsers.cpp     # deterministic parser fuzzing
 │   ├── run_tests.sh         # scenario runner
 │   └── *.txt / *.want
+├── legacy/                  # archived GUI/web front ends (not built)
 ├── Makefile                 # build system (make -> netsim)
 ├── CMakeLists.txt           # alternative CMake build
 ├── .github/workflows/ci.yml # CI (gcc/clang matrix, make test)
@@ -535,9 +537,10 @@ make test       # -Werror + ASan/UBSan unit + fuzz + scenario suite
 make san        # unit + fuzz only, with leak detection
 ```
 
-Lua scripting is optional and auto-detected via `pkg-config lua5.4` (install
-`liblua5.4-dev` on Debian/Ubuntu). Force it with `make LUA=1` or disable with
-`make LUA=0`; `LUA_CFLAGS` / `LUA_LIBS` override detection.
+Lua 5.4 is bundled under `third_party/lua/` and linked statically into `netsim`
+(and the Windows CLI) — no external Lua installation is required. Only a safe
+subset is compiled (no `os`, `io`, `package`, or `debug`). See
+`THIRD_PARTY_NOTICES.md`.
 
 `make tidy` runs clang-tidy using `.clang-tidy` (advisory; requires clang-tidy).
 
@@ -545,11 +548,14 @@ Lua scripting is optional and auto-detected via `pkg-config lua5.4` (install
 and licensing into `dist/yanas-net-<version>.tar.gz`. `make install
 PREFIX=/usr/local` installs `netsim` and `docs/netsim.1`.
 
-Native Windows desktop app (MinGW-w64, no browser):
+Native Windows build (MinGW-w64; Lua is bundled, no external Lua):
 
 ```sh
-mingw32-make -f Makefile.win   # -> yanasnet.exe
+mingw32-make -f Makefile.win   # -> netsim.exe (CLI)
 ```
+
+Both executables embed Lua 5.4 statically and carry an icon, version resource, and
+DPI-aware manifest. See Packaging below.
 
 Or with CMake:
 
@@ -567,31 +573,17 @@ g++ -std=c++17 -Wall -Wextra -Werror core/*.cpp device/*.cpp link/*.cpp \
 
 Headers use relative includes (`"../core/..."`), so no `-I` flags are needed.
 
-## Desktop app (yanas net)
-
-The product UI is a self-contained native **Win32** application — no browser, no
-GUI framework. It embeds the engine in-process and draws the topology with GDI in
-a classic desktop style.
+## Packaging and signing
 
 ```sh
-mingw32-make -f Makefile.win    # -> yanasnet.exe (MinGW-w64)
-.\yanasnet.exe
+make dist                                  # source + binaries tarball (POSIX)
+powershell -File packaging\build-win.ps1   # Windows CLI + portable ZIP
 ```
 
-The window has a red six-pointed-star logo, a topology canvas, a toolbar
-(New, Open, Save, add host/switch/router, add port, connect, run, step, ping, STP,
-refresh), a live inspector (ports, IP/VLAN, STP state, rx/tx/drop), and a command
-console. Every toolbar action drives the same in-process command interpreter used
-by the CLI. Drag any device on the canvas to move it; links follow live.
-
-Scenes are stored in **`.yn`** files (JSON content) via **File > New / Open /
-Save / Save As**. A scene carries devices, ports, links, STP/routing/gateway
-settings, and the canvas `layout`, so reopening restores the topology *and* node
-positions. `New` reinitializes the engine and clears the scene.
-
-A loopback JSON endpoint (`./netsim --serve [port]`) is also available on POSIX
-for headless/CI use (`/api/state`, `/api/cmd`, `/api/run`, `/api/step`); the
-desktop app does not depend on it.
+- `packaging/build-win.ps1` builds `netsim.exe` and writes
+  `dist/yanas-net-<ver>-cli-win64.zip` (exe, docs, license/notices).
+- `packaging/sign.ps1 -Pfx cert.pfx -Password ...` code-signs `netsim.exe` with
+  `signtool` (bring your certificate; timestamped SHA-256).
 
 ## Command-line interface
 
@@ -600,13 +592,12 @@ desktop app does not depend on it.
 ./netsim scene.yn            # load a scene and exit
 ./netsim -i scene.yn         # load a scene, then stay interactive
 ./netsim script.txt          # run a line-command script
-./netsim script.lua          # run a Lua script (if built with Lua)
-./netsim --serve 8080        # loopback JSON API (headless)
+./netsim script.lua          # run a Lua script (bundled, sandboxed)
 ./netsim --help              # options, file types, examples
 ```
 
 Options: `-h/--help`, `--version`, `--features`, `-q/--quiet`,
-`--keep-going`, `--no-lua`, `-i/--interactive`, `--serve [port]`,
+`--keep-going`, `--no-lua`, `-i/--interactive`,
 `-f/--file <path>`. Files are chosen by extension: `.yn`/`.json` scene,
 `.lua` script, otherwise a `.txt` line-command script.
 
@@ -617,7 +608,10 @@ scripting); `--no-lua` disables them entirely. A man page is in `docs/netsim.1`
 (`make install` installs the binary and the man page).
 
 `new` resets the scene; `demo` builds a sample 2-host + switch scene and pings it,
-so a first run shows a result immediately.
+so a first run shows a result immediately. On Windows the same CLI is
+`netsim.exe`. Editing commands (`remove-device`, `remove-port`, `disconnect`,
+`rename-device`, `set-ip`) and `state` (a JSON snapshot) support automation;
+Ctrl-C interrupts a running `run`.
 
 Each line is one command (`#` starts a comment):
 
@@ -634,6 +628,12 @@ set-bridge <switch> <priority>                 # bridge priority (default 32768)
 stp-status <switch>                            # print root + per-port state
 set-link   <dev:idx> down|up                   # bring a link down/up (STP reconverge)
 stats      <device>                            # per-port rx/tx/drop counters
+remove-device <name>                           # delete a device (and its links)
+remove-port   <dev:idx>                        # delete a port (and its link)
+disconnect    <dev:idx>                        # remove the link on a port
+rename-device <old> <new>                      # rename a device
+set-ip     <dev:idx> <ip>/<prefix>             # change a port's IP/subnet
+state                                          # print a JSON snapshot
 set-gateway <device> <gw-ip>                   # default gateway for a host
 arp        <device> <target-ip>                # inject an ARP request
 ping       <device> <target-ip> [ttl]          # ICMP echo (auto-ARP, RTT)
@@ -661,8 +661,8 @@ want the engine to advance. There is no implicit final drain.
 
 ## Lua scripting
 
-When built with Lua (see Building), a `.lua` file is executed as a scenario. The
-script gets three globals:
+Lua is bundled (statically linked), so `.lua` files run with no external Lua
+installation. A `.lua` file is executed as a scenario and gets three globals:
 
 | Function | Meaning |
 |----------|---------|
@@ -700,8 +700,8 @@ runaway scripts. `--no-lua` disables Lua entirely.
 - `pcap <file>` captures every frame transmitted on a link into a standard pcap
   file (Ethernet link type); `pcap off` stops and reports the frame count.
 - `save <file.yn>` exports the scene (devices, ports, links, STP, routes,
-  gateways) to a `.yn` file (JSON content); `load <file.yn>` replays it. The
-  desktop app also stores canvas positions in `layout`. See `tests/config.yn`.
+  gateways) to a `.yn` file (JSON content); `load <file.yn>` replays it. Scenes may
+  also carry an optional `layout` array (ignored by the CLI). See `tests/config.yn`.
 - `run [duration]` advances at most `duration` time units (default 1000) or until
   the queue is empty. The bound keeps periodic STP Hello timers from running
   forever; scripts must call `run` explicitly (there is no implicit final drain).
@@ -903,15 +903,16 @@ Implemented:
 - [x] JSON topology save/load (`save` / `load`)
 - [x] Bounded `run [duration]` (safe with periodic timers)
 - [x] Makefile header dependency tracking (`-MMD -MP`)
-- [x] Native Win32 desktop app (`win/yanasnet.exe`, no browser) with a draggable
-      topology canvas, toolbar, inspector, and console; red six-pointed-star logo
-- [x] File workflow: New / Open / Save / Save As with `.yn` scenes (JSON + layout)
+- [x] Windows CLI (`netsim.exe`) with bundled Lua, icon and version resource
+- [x] Editing: `remove-device` / `remove-port` / `disconnect` / `rename-device` / `set-ip`
+- [x] `state` JSON snapshot; Ctrl-C interrupts a running `run`
+- [x] Packaging: portable CLI ZIP (`packaging/build-win.ps1`) + `signtool` script;
+      Windows CI job building `netsim.exe`
+- [x] Scene workflow: `save`/`load` `.yn`, `new` reset
 - [x] Productized CLI: `--help/--version/--features`, stable exit codes,
       `file:line` script errors, `--quiet`, `--keep-going`, `-i`, `--no-lua`,
       direct `.yn` loading, `demo`/`new`, man page (`docs/netsim.1`)
-- [x] Optional loopback JSON endpoint (`--serve`) for headless/CI use
 - [x] `VERSION`, `CHANGELOG.md`, proprietary `LICENSE`, `make dist` packaging
-- [x] Web/API smoke test in the regression suite and CI
 
 Planned:
 

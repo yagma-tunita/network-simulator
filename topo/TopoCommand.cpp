@@ -257,6 +257,42 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
                       << " drop=" << p->drop << "\n";
         }
     }
+    else if (cmd == "remove-device")
+    {
+        if (t.size() != 2)
+            throw std::invalid_argument("remove-device <name>");
+        topo.RemoveDevice(t[1]);
+    }
+    else if (cmd == "remove-port")
+    {
+        if (t.size() != 2)
+            throw std::invalid_argument("remove-port <dev:idx>");
+        auto ref = ParsePortRef(t[1]);
+        topo.RemovePort(ref.first, ref.second);
+    }
+    else if (cmd == "disconnect")
+    {
+        if (t.size() != 2)
+            throw std::invalid_argument("disconnect <dev:idx>");
+        auto ref = ParsePortRef(t[1]);
+        topo.Disconnect(ref.first, ref.second);
+    }
+    else if (cmd == "rename-device")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("rename-device <old> <new>");
+        topo.RenameDevice(t[1], t[2]);
+    }
+    else if (cmd == "set-ip")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("set-ip <dev:idx> <ip>/<prefix>");
+        auto ref = ParsePortRef(t[1]);
+        Ipv4 ip;
+        uint8_t prefix = 0;
+        ParseIpPrefix(t[2], ip, prefix);
+        topo.SetPortIp(ref.first, ref.second, ip, prefix);
+    }
     else
     {
         throw std::invalid_argument("unknown command '" + cmd + "'");

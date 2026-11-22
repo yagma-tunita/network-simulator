@@ -24,11 +24,18 @@ Initial product build.
 - Lua is secure by default: a restricted sandbox (no `os`/`io`/`package`/`debug`;
   no `dofile`/`load`/`loadfile`/`require`) with a 50M-instruction budget and a
   4 MiB script-size limit; `--no-lua` disables it entirely.
-- Product: a self-contained native Win32 desktop app (`win/`, no browser) with a
-  draggable topology canvas, toolbar, inspector, and console, plus a red
-  six-pointed-star logo; File > New / Open / Save / Save As with `.yn` scenes
-  (JSON content including canvas `layout`); optional loopback JSON endpoint
-  (`./netsim --serve`) for headless use; `VERSION`, proprietary `LICENSE`,
-  `CHANGELOG.md`, `make dist`.
+- Lua is bundled: Lua 5.4.6 sources live in `third_party/lua/` and are compiled
+  statically into the CLI (safe subset; no external Lua install). The MIT notice
+  ships with the product (`THIRD_PARTY_NOTICES.md`).
+- Terminal-only product: interactive CLI plus `.txt`/`.lua`/`.yn` inputs,
+  `state` JSON snapshots, and Ctrl-C to interrupt a running simulation. Editing
+  commands: `remove-device`, `remove-port`, `disconnect`, `rename-device`,
+  `set-ip`. (Earlier GUI/web front ends are archived under `legacy/` and not built.)
+- Windows CLI `netsim.exe` with bundled Lua, a six-pointed-star icon, version
+  resource, and DPI-aware manifest; `packaging/build-win.ps1` builds a portable
+  CLI ZIP and `packaging/sign.ps1` signs it; a Windows CI job builds and uploads
+  `netsim.exe`.
+- `VERSION`, proprietary `LICENSE`, `THIRD_PARTY_NOTICES.md`, `CHANGELOG.md`,
+  `make dist` / `make install`.
 - Quality: `-Werror`, ASan/UBSan unit tests, deterministic parser fuzzing,
-  scenario + web smoke tests, gcc/clang CI, `.clang-tidy`.
+  scenario + CLI tests, gcc/clang CI, `.clang-tidy`.

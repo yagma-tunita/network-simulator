@@ -13,10 +13,15 @@
 #include "../core/Ipv4Subnet.hpp"
 #include "../core/Mac.hpp"
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#endif
 
 #include <cstring>
 #include <cctype>
@@ -29,6 +34,24 @@
 #include <vector>
 #include <cstddef>
 #include <stdexcept>
+
+#ifdef _WIN32
+using socket_t = SOCKET;
+static const socket_t kInvalidSocket = INVALID_SOCKET;
+using iolen_t = int;
+inline void CloseSock(socket_t s) { if(s != INVALID_SOCKET) closesocket(s); }
+inline bool StartSockets()
+{
+    WSADATA w;
+    return WSAStartup(MAKEWORD(2, 2), &w) == 0;
+}
+#else
+using socket_t = int;
+static const socket_t kInvalidSocket = -1;
+using iolen_t = ssize_t;
+inline void CloseSock(socket_t s) { if(s >= 0) close(s); }
+inline bool StartSockets() { return true; }
+#endif
 
 namespace
 {
@@ -186,18 +209,18 @@ namespace
         return "application/octet-stream";
     }
 
-    void SendAll(int fd, const std::string &s)
+    void SendAll(socket_t fd, const std::string &s)
     {
         std::size_t off = 0;
         while(off < s.size())
         {
-            ssize_t w = send(fd, s.data() + off, s.size() - off, 0);
+            iolen_t w = send(fd, s.data() + off, int(s.size() - off), 0);
             if(w <= 0) break;
             off += std::size_t(w);
         }
     }
 
-    void Respond(int fd, int code, const char *status,
+    void Respond(socket_t fd, int code, const char *status,
                  const std::string &ctype, const std::string &body)
     {
         std::ostringstream h;
@@ -229,7 +252,7 @@ namespace
         return v;
     }
 
-    bool ServeStatic(int fd, const std::string &path)
+    bool ServeStatic(socket_t fd, const std::string &path)
     {
         std::string rel = (path == "/" || path.empty()) ? "index.html" : path.substr(1);
         if(rel.find("..") != std::string::npos) return false;
@@ -247,15 +270,15 @@ namespace
         return false;
     }
 
-    void HandleClient(int fd, CommandContext &ctx)
+    void HandleClient(socket_t fd, CommandContext &ctx)
     {
         std::string req;
         char buf[4096];
 
         while(req.find("\r\n\r\n") == std::string::npos)
         {
-            ssize_t n = recv(fd, buf, sizeof(buf), 0);
-            if(n <= 0) { close(fd); return; }
+            iolen_t n = recv(fd, buf, sizeof(buf), 0);
+            if(n <= 0) { CloseSock(fd); return; }
             req.append(buf, std::size_t(n));
         }
 
@@ -266,7 +289,7 @@ namespace
         std::size_t need = ContentLength(head);
         while(body.size() < need)
         {
-            ssize_t n = recv(fd, buf, sizeof(buf), 0);
+            iolen_t n = recv(fd, buf, sizeof(buf), 0);
             if(n <= 0) break;
             body.append(buf, std::size_t(n));
         }
@@ -315,21 +338,28 @@ namespace
             Respond(fd, 404, "Not Found", "text/plain", "not found");
         }
 
-        close(fd);
+        CloseSock(fd);
     }
 }
 
 void RunWebServer(Engine &engine, Topology &topo, int port)
 {
-    int server = socket(AF_INET, SOCK_STREAM, 0);
-    if(server < 0)
+    if(!StartSockets())
+    {
+        std::cerr << "error: socket initialization failed\n";
+        return;
+    }
+
+    socket_t server = socket(AF_INET, SOCK_STREAM, 0);
+    if(server == kInvalidSocket)
     {
         std::cerr << "error: cannot create socket\n";
         return;
     }
 
     int yes = 1;
-    setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    setsockopt(server, SOL_SOCKET, SO_REUSEADDR,
+               reinterpret_cast<const char *>(&yes), int(sizeof(yes)));
 
     sockaddr_in addr;
     std::memset(&addr, 0, sizeof(addr));
@@ -340,13 +370,13 @@ void RunWebServer(Engine &engine, Topology &topo, int port)
     if(bind(server, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0)
     {
         std::cerr << "error: cannot bind 127.0.0.1:" << port << "\n";
-        close(server);
+        CloseSock(server);
         return;
     }
     if(listen(server, 16) < 0)
     {
         std::cerr << "error: cannot listen\n";
-        close(server);
+        CloseSock(server);
         return;
     }
 
@@ -360,8 +390,8 @@ void RunWebServer(Engine &engine, Topology &topo, int port)
 
     for(;;)
     {
-        int client = accept(server, nullptr, nullptr);
-        if(client < 0) continue;
+        socket_t client = accept(server, nullptr, nullptr);
+        if(client == kInvalidSocket) continue;
         HandleClient(client, ctx);
     }
 }

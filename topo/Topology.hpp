@@ -44,6 +44,12 @@ struct Topology
 
     void AddRoute(const std::string &router, const Ipv4Subnet &dst, const Ipv4 &nextHop);
 
+    void RemoveDevice(const std::string &name);
+    void RemovePort(const std::string &device, std::size_t idx);
+    void Disconnect(const std::string &device, std::size_t idx);
+    void RenameDevice(const std::string &oldName, const std::string &newName);
+    void SetPortIp(const std::string &device, std::size_t idx, const Ipv4 &ip, uint8_t prefix);
+
     Device *FindDevice(const std::string &name);
     Port *FindPort(const std::string &device, std::size_t idx);
 };

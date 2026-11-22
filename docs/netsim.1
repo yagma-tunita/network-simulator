@@ -9,7 +9,7 @@ yanas net \- deterministic Layer-2/Layer-3 network simulator
 simulates IPv4/Ethernet networks (ARP, VLAN/802.1Q, MAC-learning switches,
 spanning tree, static routing, ICMP) on a deterministic logical clock.
 It runs an interactive command prompt, line-command scripts, Lua scripts, or
-loads \fB.yn\fR scene files.
+loads \fB.yn\fR scene files. Press Ctrl-C to interrupt a running simulation.
 .SH OPTIONS
 .TP
 .B \-h, \-\-help
@@ -33,16 +33,13 @@ Refuse to execute \fB.lua\fR scripts (defense in depth beyond the default sandbo
 .B \-i, \-\-interactive
 Enter the interactive prompt after loading a file.
 .TP
-.B \-\-serve [port]
-Serve the loopback JSON API on 127.0.0.1 (default port 8080).
-.TP
 .B \-f, \-\-file \fIpath\fR
 Run a scene or script file.
 .SH FILES
 .TP
 .I *.yn
-Scene file (JSON) with devices, ports, links, STP/routing/gateway settings, and
-canvas layout.
+Scene file (JSON) with devices, ports, links, STP/routing/gateway settings, and an
+optional layout array (ignored by the CLI).
 .TP
 .I *.txt
 Line-command script.
@@ -64,7 +61,7 @@ netsim
 netsim tests/config.yn
 netsim -i tests/config.yn
 netsim tests/auto_ping.txt
-netsim --serve 8080
+netsim tests/lua_ping.lua
 .fi
 .SH SEE ALSO
 The project README and DEVELOPMENT_LOG.md.

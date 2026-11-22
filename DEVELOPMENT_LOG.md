@@ -605,6 +605,72 @@ Conventions:
   multi-tenant container; the command set still intentionally allows scene file
   save/load and pcap output.
 
+## Phase 36 — Bundled, statically linked Lua (2026-11-22)
+
+- Vendored Lua 5.4.6 under `third_party/lua/` as a safe subset: core VM + auxlib +
+  base/table/string/math/utf8/coroutine. `liolib`, `loslib`, `loadlib`, `ldblib`,
+  and `linit` are excluded, so `os`/`io`/`package`/`debug` are not even compiled
+  (stronger than runtime blocking).
+- Builds link Lua statically: the POSIX `Makefile` compiles the C sources with
+  `$(CC)` into `liblua.a` and always defines `HAVE_LUA`; `CMakeLists.txt` builds a
+  `yanas_lua` static library; `Makefile.win` compiles the same sources with MinGW
+  `gcc` and links `yanasnet.exe`. The system/`pkg-config` Lua dependency is gone
+  and CI no longer installs `liblua5.4-dev`.
+- Desktop app: File > Run Lua Script... runs a sandboxed scenario and routes its
+  output to the console.
+- Licensing: added `third_party/lua/LICENSE` and `THIRD_PARTY_NOTICES.md` (MIT);
+  `make dist` includes `third_party` and the notice.
+- Verified: WSL `make test` green with bundled Lua; `ldd netsim` shows no `liblua`
+  (static); Windows `yanasnet.exe` rebuilt with Lua and smoke-launched.
+- Note: users need no Lua environment at all.
+
+## Phase 37 — Windows CLI, resources, packaging, and Windows CI (2026-11-22)
+
+- Ported the embedded JSON server from POSIX sockets to a portable layer: POSIX on
+  Unix and Winsock2 on Windows (`socket_t`, `StartSockets`, `CloseSock`, `-lws2_32`).
+  `netsim.exe --serve` now works on Windows (verified: HTTP 200 from
+  `http://127.0.0.1:18081/api/state`).
+- Built a second Windows executable: `netsim.exe` (console CLI, bundled Lua,
+  `--serve`) alongside `yanasnet.exe` (GUI). Both link the same vendored Lua.
+- Windows resources: generated `win/yanas.ico` (16/32/48 six-pointed star),
+  `win/yanas.manifest` (DPI aware), and `win/yanas.rc` (icon + VERSIONINFO); the
+  GUI loads the icon from the resource. Version info verified via
+  `(Get-Item yanasnet.exe).VersionInfo`.
+- Packaging/signing: `packaging/build-win.ps1` (both exes + portable ZIP),
+  `packaging/yanas-net.iss` (Inno Setup), `packaging/sign.ps1` (signtool), and a
+  Windows CI job (MSYS2/MinGW builds both executables and uploads artifacts).
+- Build hygiene: POSIX Lua objects now live under `build/lua/` to avoid mixing
+  MinGW COFF objects with ELF builds; `make dist` excludes `*.o/*.a` and includes
+  `packaging/`, `win/` resources, and both Windows executables when present.
+- Verified: WSL `make test` fully green with bundled Lua and the portable server;
+  Windows `netsim.exe` (`--version/--features/lua_sandbox/config.yn/--no-lua`) and
+  `yanasnet.exe` smoke-launched; portable ZIP contents checked.
+- Note: Inno Setup compilation and actual code signing require the external tools
+  and a certificate (not available here); the scripts are provided.
+
+## Phase 38 — Terminal-only pivot and CLI editing (2026-11-22)
+
+- Product focus narrowed to the terminal for technical users. The native GUI and
+  the loopback web/JSON front end were moved to `legacy/` (kept for reference, not
+  built) and removed from the build, CI, docs, and packaging. The Windows console
+  CLI (`netsim.exe`) remains; the portable ZIP is CLI-only.
+- New editing commands: `remove-device`, `remove-port`, `disconnect`,
+  `rename-device`, `set-ip`. `Topology` gained the corresponding operations
+  (removing a port also removes its link; router connected routes are rebuilt).
+- `state` command prints a JSON snapshot (devices, ports/IP/VLAN/STP state,
+  counters, links, time) for automation, replacing the web `/api/state` use case.
+- Ctrl-C now interrupts a running simulation cleanly: `Engine` has a
+  `shouldStop` hook checked in `Run`/`RunUntil`; the CLI installs a `SIGINT`
+  handler, prints `interrupted; now=...`, and keeps the process responsive.
+- Build/CI/packaging: Makefile/CMake/`Makefile.win` build only `netsim`(exe);
+  Windows resources (icon/version/manifest) remain on the CLI; CI's Windows job
+  builds `netsim.exe`; `packaging/build-win.ps1` produces a CLI ZIP.
+- Tests: CLI regression extended with `edit-state` (rename + set-ip + absence of
+  the old name) and `remove-disconnect` checks. Ctrl-C verified with a busy
+  three-switch STP scenario under `timeout -s INT` (`interrupted`).
+- Verified: WSL `make test` green (71 unit, fuzz, 17 scenarios + 3 Lua + CLI),
+  Ctrl-C interruption, Windows `netsim.exe` build and smoke.
+
 ---
 
 ## Validation approach (2026-11-20)

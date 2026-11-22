@@ -37,10 +37,6 @@ if ./netsim --features 2>/dev/null | grep -q 'lua'; then
     done
 fi
 
-if [ -x ./netsim ] && command -v curl >/dev/null 2>&1; then
-    bash tests/web_test.sh || status=1
-fi
-
 if [ -x ./netsim ]; then
     bash tests/cli_test.sh || status=1
 fi

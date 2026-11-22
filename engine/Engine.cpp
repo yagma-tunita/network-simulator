@@ -14,9 +14,25 @@ bool Engine::Step()
 
 uint64_t Engine::Now() const { return now; }
 
-void Engine::Run(){ while(Step());}
+void Engine::Run()
+{
+    stopped = false;
+    while(true)
+    {
+        if(shouldStop && shouldStop()) { stopped = true; break; }
+        if(!Step()) break;
+    }
+}
 
-void Engine::RunUntil(uint64_t time){ while(!queue.Empty() && (queue.Top()->time <= time)) Step();}
+void Engine::RunUntil(uint64_t time)
+{
+    stopped = false;
+    while(!queue.Empty() && (queue.Top()->time <= time))
+    {
+        if(shouldStop && shouldStop()) { stopped = true; break; }
+        Step();
+    }
+}
 
 void Engine::Reset()
 {

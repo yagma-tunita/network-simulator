@@ -17,6 +17,8 @@ struct Engine: Scheduler, Clock
     uint64_t seq = 0;
     std::function<void(uint64_t, const char *)> trace;
     std::function<void(uint64_t, const EthernetFrame &)> frameTap;
+    std::function<bool()> shouldStop;
+    bool stopped = false;
 
     bool Step();
     uint64_t Now() const override;

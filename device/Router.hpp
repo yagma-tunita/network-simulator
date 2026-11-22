@@ -46,6 +46,7 @@ struct Router : Device
     void AddRoute(const Route &r);
     const Route* FindRoute(const Ipv4 &dstip) const;
     Port* PortForNextHop(const Ipv4 &ip);
+    void RebuildConnected();
 
     void AddPort(Port* p) override;
     void SetClock(Clock *c) override;

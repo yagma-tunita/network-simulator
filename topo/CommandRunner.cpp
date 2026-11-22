@@ -6,20 +6,131 @@
 #include "../engine/Pcap.hpp"
 #include "../core/EthernetFrame.hpp"
 #include "../device/Device.hpp"
+#include "../device/Port.hpp"
 #include "../device/EndDevice.hpp"
+#include "../device/Switch.hpp"
+#include "../device/Router.hpp"
+#include "../link/Link.hpp"
 #include "../core/Ipv4.hpp"
+#include "../core/Ipv4Subnet.hpp"
 #include "../core/Mac.hpp"
 #include <iostream>
+#include <sstream>
+#include <map>
+#include <utility>
 #include <string>
 #include <vector>
 #include <stdexcept>
 #include <chrono>
 #include <memory>
 #include <cstdint>
+#include <cstddef>
 
 namespace
 {
     using Tokens = std::vector<std::string>;
+
+    std::string JsonQuote(const std::string &s)
+    {
+        std::string o = "\"";
+        for(char c : s)
+        {
+            switch(c)
+            {
+            case '"':  o += "\\\""; break;
+            case '\\': o += "\\\\"; break;
+            case '\n': o += "\\n"; break;
+            case '\r': o += "\\r"; break;
+            case '\t': o += "\\t"; break;
+            default:
+                if(static_cast<unsigned char>(c) < 0x20) o += ' ';
+                else o += c;
+            }
+        }
+        o += "\"";
+        return o;
+    }
+
+    const char *KindOf(const Device *d)
+    {
+        if(dynamic_cast<const Router *>(d)) return "router";
+        if(dynamic_cast<const Switch *>(d)) return "switch";
+        return "end";
+    }
+
+    const char *StateName(const Port *p)
+    {
+        const Switch *sw = dynamic_cast<const Switch *>(p->owner);
+        if(!sw || !sw->stpEnabled) return "up";
+        switch(p->stpState)
+        {
+        case StpPortState::Disabled:   return "disabled";
+        case StpPortState::Blocking:   return "blocking";
+        case StpPortState::Listening:  return "listening";
+        case StpPortState::Learning:   return "learning";
+        case StpPortState::Forwarding: return "forwarding";
+        }
+        return "up";
+    }
+
+    std::string StateJson(Topology &topo, Engine &engine)
+    {
+        std::map<const Port *, std::pair<std::string, std::size_t>> pmap;
+        for(const auto &kv : topo.devices)
+        {
+            const Device *d = kv.second.get();
+            for(std::size_t i = 0; i < d->portList.size(); ++i)
+                pmap[d->portList[i]] = { kv.first, i };
+        }
+
+        std::ostringstream o;
+        o << "{\"time\":" << engine.Now() << ",\"devices\":[";
+        bool first = true;
+        for(const auto &kv : topo.devices)
+        {
+            const Device *d = kv.second.get();
+            if(!first) o << ",";
+            first = false;
+            o << "{\"name\":" << JsonQuote(kv.first)
+              << ",\"kind\":" << JsonQuote(KindOf(d))
+              << ",\"ports\":[";
+            for(std::size_t i = 0; i < d->portList.size(); ++i)
+            {
+                const Port *p = d->portList[i];
+                if(i) o << ",";
+                o << "{\"index\":" << i
+                  << ",\"mac\":" << JsonQuote(p->mac.ToString())
+                  << ",\"ip\":" << (p->hasIp
+                        ? JsonQuote(p->ip.ToString() + "/" + std::to_string(p->subnet.prefix))
+                        : std::string("null"))
+                  << ",\"vlan\":" << p->vlan
+                  << ",\"tagged\":" << (p->tagged ? "true" : "false")
+                  << ",\"state\":" << JsonQuote(StateName(p))
+                  << ",\"rx\":" << p->rx << ",\"tx\":" << p->tx
+                  << ",\"drop\":" << p->drop << "}";
+            }
+            o << "]}";
+        }
+        o << "],\"links\":[";
+        first = true;
+        for(const auto &lp : topo.links)
+        {
+            const Link *l = lp.get();
+            auto a = pmap.find(l->A);
+            auto b = pmap.find(l->B);
+            if(a == pmap.end() || b == pmap.end()) continue;
+            if(!first) o << ",";
+            first = false;
+            o << "{\"a\":" << JsonQuote(a->second.first)
+              << ",\"aPort\":" << a->second.second
+              << ",\"b\":" << JsonQuote(b->second.first)
+              << ",\"bPort\":" << b->second.second
+              << ",\"up\":" << (l->enabled ? "true" : "false")
+              << ",\"delay\":" << l->delay << "}";
+        }
+        o << "]}";
+        return o.str();
+    }
 
     struct NopEvent : Event
     {
@@ -32,7 +143,7 @@ namespace
         return c == "run" || c == "step" || c == "quit" || c == "exit"
             || c == "lookup" || c == "help" || c == "trace" || c == "bench"
             || c == "pcap" || c == "save" || c == "load"
-            || c == "new" || c == "demo";
+            || c == "new" || c == "demo" || c == "state";
     }
 
     void RunControl(CommandContext &ctx, const Tokens &t)
@@ -55,7 +166,13 @@ namespace
             uint64_t d = (t.size() > 1) ? std::stoull(t[1]) : 1000;
             if (d > kMaxRun) d = kMaxRun;
             ctx.engine->RunUntil(ctx.engine->Now() + d);
-            if (!ctx.quiet) std::cout << "ran; now=" << ctx.engine->Now() << "\n";
+            if (!ctx.quiet)
+            {
+                if (ctx.engine->stopped)
+                    std::cout << "interrupted; now=" << ctx.engine->Now() << "\n";
+                else
+                    std::cout << "ran; now=" << ctx.engine->Now() << "\n";
+            }
             return;
         }
         if (c == "new")
@@ -165,6 +282,11 @@ namespace
                 std::cout << "(no entry)\n";
             return;
         }
+        if (c == "state")
+        {
+            std::cout << StateJson(*ctx.topo, *ctx.engine) << "\n";
+            return;
+        }
         if (c == "save")
         {
             if (t.size() != 2)
@@ -214,6 +336,12 @@ void PrintHelp()
         "  stp-status <switch>\n"
         "  set-link   <dev:idx> down|up\n"
         "  stats      <device>\n"
+        "  remove-device <name>\n"
+        "  remove-port   <dev:idx>\n"
+        "  disconnect    <dev:idx>\n"
+        "  rename-device <old> <new>\n"
+        "  set-ip     <dev:idx> <ip>/<prefix>\n"
+        "  state      print a JSON snapshot (automation)\n"
         "  pcap       <file> | pcap off                 # capture frames to pcap\n"
         "  save       <file.yn>                         # export scene (.yn)\n"
         "  load       <file.yn>                         # build scene from .yn\n"

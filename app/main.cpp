@@ -3,7 +3,6 @@
 #include "../topo/CommandRunner.hpp"
 #include "../topo/JsonConfig.hpp"
 #include "Version.hpp"
-#include "webserver.hpp"
 
 #include <fstream>
 #include <iostream>
@@ -11,10 +10,18 @@
 #include <vector>
 #include <stdexcept>
 #include <cstddef>
+#include <csignal>
 
 #ifdef HAVE_LUA
 #include "../script/LuaScript.hpp"
 #endif
+
+static volatile std::sig_atomic_t g_sigint = 0;
+
+static void OnSigint(int)
+{
+    g_sigint = 1;
+}
 
 static bool EndsWith(const std::string &s, const std::string &suffix)
 {
@@ -36,7 +43,6 @@ static void PrintUsage(const char *prog)
         << "      --keep-going    continue after a script error\n"
         << "      --no-lua        refuse to run .lua scripts\n"
         << "  -i, --interactive   enter the prompt after loading a file\n"
-        << "      --serve [port]  serve the loopback JSON API (default 8080)\n"
         << "  -f, --file <path>   run a scene/script file\n\n"
         << "Files:\n"
         << "  .yn / .json   load a scene (topology)\n"
@@ -48,7 +54,8 @@ static void PrintUsage(const char *prog)
         << "  " << prog << " -i tests/config.yn    # load, then prompt\n"
         << "  " << prog << " tests/auto_ping.txt\n"
         << "  " << prog << " tests/lua_ping.lua\n"
-        << "  echo demo | " << prog << "\n";
+        << "  echo demo | " << prog << "\n\n"
+        << "Press Ctrl-C to interrupt a running simulation.\n";
 }
 
 static void RunInteractive(CommandContext &ctx)
@@ -164,6 +171,12 @@ int main(int argc, char **argv)
     Topology topo;
     topo.SetEngine(&engine);
 
+    std::signal(SIGINT, OnSigint);
+    engine.shouldStop = []() -> bool {
+        if(g_sigint) { g_sigint = 0; return true; }
+        return false;
+    };
+
     CommandContext ctx;
     ctx.engine = &engine;
     ctx.topo = &topo;
@@ -209,25 +222,6 @@ int main(int argc, char **argv)
         else if (a == "-i" || a == "--interactive")
         {
             forceInteractive = true;
-        }
-        else if (a == "--serve")
-        {
-            int port = 8080;
-            if (i + 1 < argc && argv[i + 1][0] != '-')
-            {
-                try
-                {
-                    port = std::stoi(argv[++i]);
-                }
-                catch (...)
-                {
-                    std::cerr << "error: bad port\n";
-                    PrintUsage(argv[0]);
-                    return 2;
-                }
-            }
-            RunWebServer(engine, topo, port);
-            return 0;
         }
         else if (a == "-f" || a == "--file" || a == "--script" || a == "--scene")
         {

@@ -19,6 +19,7 @@
 #include "../topo/Topology.hpp"
 #include "../topo/CommandRunner.hpp"
 #include "../topo/JsonConfig.hpp"
+#include "../script/LuaScript.hpp"
 #include "../device/Device.hpp"
 #include "../device/Port.hpp"
 #include "../device/Switch.hpp"
@@ -68,6 +69,7 @@ namespace
     const int ID_SEND = 113, ID_NEW = 114, ID_OPEN = 115;
     const int IDM_EXIT = 201, IDM_ABOUT = 202;
     const int IDM_NEW = 203, IDM_OPEN = 204, IDM_SAVE = 205, IDM_SAVEAS = 206;
+    const int IDM_RUNLUA = 207;
 
     const char *KindOf(const Device *d)
     {
@@ -362,6 +364,23 @@ namespace
         ofn.lpstrDefExt = "yn";
         ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
         if(!GetSaveFileNameA(&ofn)) return std::string();
+        return std::string(buf);
+    }
+
+    std::string OpenLuaDialog()
+    {
+        char buf[MAX_PATH];
+        buf[0] = 0;
+        OPENFILENAMEA ofn;
+        std::memset(&ofn, 0, sizeof(ofn));
+        ofn.lStructSize = sizeof(ofn);
+        ofn.hwndOwner = g_main;
+        ofn.lpstrFilter = "Lua script (*.lua)\0*.lua\0All files (*.*)\0*.*\0";
+        ofn.lpstrFile = buf;
+        ofn.nMaxFile = MAX_PATH;
+        ofn.lpstrDefExt = "lua";
+        ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+        if(!GetOpenFileNameA(&ofn)) return std::string();
         return std::string(buf);
     }
 
@@ -752,6 +771,7 @@ namespace
             AppendMenuA(file, MF_STRING, IDM_OPEN, "&Open...");
             AppendMenuA(file, MF_STRING, IDM_SAVE, "&Save");
             AppendMenuA(file, MF_STRING, IDM_SAVEAS, "Save &As...");
+            AppendMenuA(file, MF_STRING, IDM_RUNLUA, "Run &Lua Script...");
             AppendMenuA(file, MF_SEPARATOR, 0, nullptr);
             AppendMenuA(file, MF_STRING, IDM_EXIT, "E&xit");
             AppendMenuA(mb, MF_POPUP, (UINT_PTR)file, "&File");
@@ -813,6 +833,24 @@ namespace
             case ID_OPEN:
             case IDM_OPEN:   DoOpen(); break;
             case IDM_SAVEAS: DoSaveAs(); break;
+            case IDM_RUNLUA:
+            {
+                std::string path = OpenLuaDialog();
+                if(!path.empty())
+                {
+                    std::ostringstream out;
+                    std::streambuf *old = std::cout.rdbuf(out.rdbuf());
+                    std::string err;
+                    bool ok = RunLuaFile(g_engine, g_topo, path, err);
+                    std::cout.rdbuf(old);
+                    AppendLog("> run-lua " + path);
+                    std::string captured = out.str();
+                    if(!captured.empty()) AppendLog(captured);
+                    if(!ok) AppendLog("lua: " + err);
+                    RefreshAll();
+                }
+                break;
+            }
             case ID_REFRESH: RefreshAll(); break;
             case ID_SEND:
             {
@@ -854,6 +892,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
     wc.hInstance = hInstance;
     wc.lpszClassName = "YanasMain";
     wc.hCursor = LoadCursorA(nullptr, IDC_ARROW);
+    wc.hIcon = LoadIconA(hInstance, MAKEINTRESOURCEA(1));
     wc.hbrBackground = CreateSolidBrush(RGB(192, 192, 192));
     RegisterClassA(&wc);
 

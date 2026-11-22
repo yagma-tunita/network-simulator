@@ -4,28 +4,20 @@ CXXFLAGS ?= -std=c++17 -Wall -Wextra -Werror -O2
 VERSION := $(shell cat VERSION 2>/dev/null || echo 0.0.0)
 PREFIX ?= /usr/local
 
-LUA ?= auto
-ifeq ($(LUA),auto)
-  ifeq ($(shell pkg-config --exists lua5.4 2>/dev/null && echo yes),yes)
-    LUA := 1
-  else
-    LUA := 0
-  endif
-endif
+CC ?= cc
+AR ?= ar
 
-LUA_CFLAGS ?= $(shell pkg-config --cflags lua5.4 2>/dev/null)
-LUA_LIBS   ?= $(shell pkg-config --libs lua5.4 2>/dev/null)
+LUA_DIR := third_party/lua
+LUA_SRCS := $(wildcard $(LUA_DIR)/*.c)
+LUA_OBJS := $(patsubst $(LUA_DIR)/%.c,build/lua/%.o,$(LUA_SRCS))
+LUA_LIB := build/liblua.a
+
+CXXFLAGS += -DHAVE_LUA -I$(LUA_DIR)
 
 LIB_SRCS := $(wildcard core/*.cpp device/*.cpp link/*.cpp engine/*.cpp topo/*.cpp)
 APP_SRCS := $(wildcard app/*.cpp)
-SRCS := $(LIB_SRCS) $(APP_SRCS)
-LDLIBS :=
-
-ifeq ($(LUA),1)
-CXXFLAGS += -DHAVE_LUA $(LUA_CFLAGS)
-SRCS += script/LuaScript.cpp
-LDLIBS += $(LUA_LIBS)
-endif
+SRCS := $(LIB_SRCS) $(APP_SRCS) script/LuaScript.cpp
+LDLIBS := $(LUA_LIB) -lm
 
 OBJS := $(SRCS:.cpp=.o)
 DEPS := $(OBJS:.o=.d)
@@ -45,11 +37,18 @@ TIDY ?= clang-tidy
 
 all: $(TARGET)
 
-$(TARGET): $(OBJS)
+$(TARGET): $(OBJS) $(LUA_LIB)
 	$(CXX) $(CXXFLAGS) $(OBJS) -o $@ $(LDLIBS)
 
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
+
+build/lua/%.o: $(LUA_DIR)/%.c
+	@mkdir -p build/lua
+	$(CC) -O2 -I$(LUA_DIR) -c $< -o $@
+
+$(LUA_LIB): $(LUA_OBJS)
+	$(AR) rcs $@ $^
 
 $(UNIT_BIN): $(UNIT_SRC) $(LIB_SRCS)
 	@mkdir -p build
@@ -78,9 +77,10 @@ tidy:
 dist: $(TARGET)
 	@mkdir -p dist
 	tar czf dist/yanas-net-$(VERSION).tar.gz \
-		$(TARGET) web win docs Makefile Makefile.win \
-		$(if $(wildcard yanasnet.exe),yanasnet.exe) \
-		README.md LICENSE VERSION CHANGELOG.md DEVELOPMENT_LOG.md
+		--exclude='*.o' --exclude='*.a' --exclude='*.d' \
+		$(TARGET) win docs third_party packaging Makefile Makefile.win \
+		$(if $(wildcard netsim.exe),netsim.exe) \
+		README.md LICENSE THIRD_PARTY_NOTICES.md VERSION CHANGELOG.md DEVELOPMENT_LOG.md
 	@echo "wrote dist/yanas-net-$(VERSION).tar.gz"
 
 install: $(TARGET)

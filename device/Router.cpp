@@ -20,6 +20,15 @@ void Router::AddPort(Port *p)
         AddRoute(p->subnet, Ipv4::Any(), true);
 }
 
+void Router::RebuildConnected()
+{
+    routeTable.erase(std::remove_if(routeTable.begin(), routeTable.end(),
+                     [](const Route &r) { return r.direct; }),
+                     routeTable.end());
+    for(Port *p : portList)
+        if(p->hasIp) AddRoute(p->subnet, Ipv4::Any(), true);
+}
+
 void Router::SetClock(Clock *c)
 {
     Device::SetClock(c);
