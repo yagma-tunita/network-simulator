@@ -1,0 +1,3 @@
+generate tree 3 3
+ping H1 10.0.0.3
+run

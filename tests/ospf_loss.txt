@@ -1,0 +1,10 @@
+add-device R1 router
+add-device R2 router
+add-port R1 aa:00:00:00:00:01 10.0.0.1/24
+add-port R2 aa:00:00:00:00:02 10.0.0.2/24
+connect R1:0 R2:0
+set-link R1:0 loss 30
+ospf R1 on
+ospf R2 on
+run 300
+ospf-status R1

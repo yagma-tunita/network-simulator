@@ -1,0 +1,8 @@
+add-device PC1 end
+add-device SRV end
+add-port PC1 aa:aa:aa:aa:aa:01 10.0.0.1/24
+add-port SRV aa:aa:aa:aa:aa:02 10.0.0.2/24
+connect PC1:0 SRV:0
+dns-server SRV on
+dns-query PC1 10.0.0.2 missing.example
+run

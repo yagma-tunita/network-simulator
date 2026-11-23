@@ -112,6 +112,9 @@ bool RunLuaFile(Engine &engine, Topology &topo, const std::string &path, std::st
     lua_pushcfunction(L, L_log);
     lua_setglobal(L, "log");
 
+    lua_pushcfunction(L, L_log);
+    lua_setglobal(L, "print");
+
     {
         std::ifstream probe(path, std::ios::binary | std::ios::ate);
         if(!probe)

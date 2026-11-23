@@ -17,7 +17,23 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y clang
-      - name: Build, unit, fuzz, scenarios (ASan/UBSan)
+      - name: Unit, fuzz, scenarios, CLI
+        run: make test
+
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Coverage gate, soak, perf
+        run: make check
+
+  macos:
+    runs-on: macos-latest
+    env:
+      WERROR: 0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test (no -Werror)
         run: make test
 
   tidy:

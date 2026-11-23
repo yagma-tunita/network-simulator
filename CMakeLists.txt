@@ -10,6 +10,7 @@ file(GLOB_RECURSE NETSIM_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/link/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/engine/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/topo/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/netstack/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/app/*.cpp")
 
 file(GLOB LUA_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lua/*.c")

@@ -1,0 +1,1 @@
+iface 10.0.0.1 state=BDR dr=10.0.0.2 bdr=10.0.0.1

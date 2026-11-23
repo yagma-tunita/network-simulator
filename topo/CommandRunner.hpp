@@ -18,3 +18,4 @@ struct CommandContext
 
 void RunScriptLine(CommandContext &ctx, const std::string &line);
 void PrintHelp();
+std::string StateSnapshot(Topology &topo, Engine &engine);

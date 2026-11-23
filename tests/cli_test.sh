@@ -79,4 +79,52 @@ else
     status=1
 fi
 
+cat > /tmp/yn_show.txt <<'EOF'
+add-device PC1 end
+add-device R1 router
+add-port PC1 aa:aa:aa:aa:aa:01 10.0.0.2/24
+add-port R1 22:22:22:22:22:01 10.0.0.254/24
+connect PC1:0 R1:0
+devices
+routes R1
+links
+EOF
+out=$(./netsim /tmp/yn_show.txt 2>&1)
+if printf '%s' "$out" | grep -q 'devices (2):' && \
+   printf '%s' "$out" | grep -q '10.0.0.0/24 -> direct' && \
+   printf '%s' "$out" | grep -q 'PC1:0 <-> R1:0 up'; then
+    echo "PASS  cli show"
+else
+    echo "FAIL  cli show"
+    status=1
+fi
+
+cat > /tmp/yn_export.txt <<'EOF'
+add-device PC1 end
+add-device SW1 switch
+add-port PC1 aa:aa:aa:aa:aa:01 10.0.0.1/24
+add-port SW1 11:11:11:11:11:01
+connect PC1:0 SW1:0
+export dot /tmp/yn_export.dot
+export svg /tmp/yn_export.svg
+EOF
+out=$(./netsim /tmp/yn_export.txt 2>&1)
+if printf '%s' "$out" | grep -q 'exported dot' && \
+   grep -q 'graph' /tmp/yn_export.dot 2>/dev/null && \
+   grep -q '<svg' /tmp/yn_export.svg 2>/dev/null; then
+    echo "PASS  cli export"
+else
+    echo "FAIL  cli export"
+    status=1
+fi
+rm -f /tmp/yn_export.dot /tmp/yn_export.svg
+
+out=$(printf 'help ping\nquit\n' | ./netsim 2>&1)
+if printf '%s' "$out" | grep -q 'usage: ping'; then
+    echo "PASS  cli command-help"
+else
+    echo "FAIL  cli command-help"
+    status=1
+fi
+
 exit "$status"

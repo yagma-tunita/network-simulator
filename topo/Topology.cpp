@@ -21,6 +21,8 @@ static T *CreateDevice(std::map<std::string, std::unique_ptr<Device>> &devices,
 {
     if (devices.count(name))
         throw std::invalid_argument("Topology: duplicate device '" + name + "'");
+    if (devices.size() >= Topology::kMaxDevices)
+        throw std::length_error("device limit reached (4096)");
 
     auto dev = std::make_unique<T>();
     T *raw = dev.get();
@@ -166,6 +168,10 @@ Router *Topology::AddRouter(const std::string &name)
 Port *Topology::AddPort(const std::string &device, const Mac &mac)
 {
     Device *dev = FindDevice(device);
+    if (ports.size() >= kMaxPorts)
+        throw std::length_error("port limit reached (65536)");
+    if (dev->portList.size() >= kMaxPortsPerDevice)
+        throw std::length_error("ports-per-device limit reached (1024)");
 
     auto up = std::make_unique<Port>();
     Port *p = up.get();
@@ -180,6 +186,10 @@ Port *Topology::AddPort(const std::string &device, const Mac &mac,
                         const Ipv4 &ip, uint8_t prefix)
 {
     Device *dev = FindDevice(device);
+    if (ports.size() >= kMaxPorts)
+        throw std::length_error("port limit reached (65536)");
+    if (dev->portList.size() >= kMaxPortsPerDevice)
+        throw std::length_error("ports-per-device limit reached (1024)");
 
     auto up = std::make_unique<Port>(mac, dev, ip, prefix, nullptr);
     Port *p = up.get();
@@ -194,6 +204,8 @@ Link *Topology::Connect(const std::string &devA, std::size_t idxA,
 {
     Port *a = FindPort(devA, idxA);
     Port *b = FindPort(devB, idxB);
+    if (links.size() >= kMaxLinks)
+        throw std::length_error("link limit reached (65536)");
 
     auto up = std::make_unique<Link>(a, b);
     Link *l = up.get();

@@ -1,0 +1,15 @@
+add-device PC1 end
+add-device R1 router
+add-device SRV end
+add-port PC1 aa:aa:aa:aa:aa:01 192.168.1.1/24
+add-port R1 aa:00:00:00:00:01 192.168.1.254/24
+add-port R1 aa:00:00:00:00:02 203.0.113.1/24
+add-port SRV aa:aa:aa:aa:aa:02 203.0.113.2/24
+connect PC1:0 R1:0
+connect R1:1 SRV:0
+set-gateway PC1 192.168.1.254
+set-gateway SRV 203.0.113.1
+nat R1 on R1:0 R1:1
+tcp-listen SRV on 80
+tcp-connect PC1 203.0.113.2 80 hello
+run 5000

@@ -1,0 +1,12 @@
+add-device PC1 end
+add-device SRV end
+add-port PC1 aa:aa:aa:aa:aa:01
+add-port SRV aa:aa:aa:aa:aa:02 10.0.0.1/24
+connect PC1:0 SRV:0
+dhcp-server SRV on 10.0.0.100 10.0.0.110 24 10.0.0.1 10.0.0.1
+dns-server SRV on
+dns-record SRV example.com 10.0.0.1
+dhcp-client PC1 0
+run 2000
+dns-query PC1 example.com
+run 2000

@@ -1,0 +1,8 @@
+add-device PC1 end
+add-device PC2 end
+add-port PC1 aa:aa:aa:aa:aa:01 10.0.0.1/24
+add-port PC2 aa:aa:aa:aa:aa:02 10.0.0.2/24
+connect PC1:0 PC2:0
+tcp-lite-echo PC2 on 80
+tcp-lite-echo-client PC1 10.0.0.2 80 hello
+run

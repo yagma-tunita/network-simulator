@@ -10,6 +10,28 @@ void Link::SetScheduler(Scheduler *s){ scheduler = s;}
 
 void Link::SetDelay(uint64_t d){ delay = d;}
 
+void Link::SetLoss(double pct)
+{
+    lossPct = pct < 0.0 ? 0.0 : (pct > 100.0 ? 100.0 : pct);
+}
+
+void Link::SetDup(double pct)
+{
+    dupPct = pct < 0.0 ? 0.0 : (pct > 100.0 ? 100.0 : pct);
+}
+
+void Link::SetJitter(uint64_t max)
+{
+    jitter = max;
+}
+
+void Link::ClearImpair()
+{
+    lossPct = 0.0;
+    dupPct = 0.0;
+    jitter = 0;
+}
+
 void Link::SetUp(bool up)
 {
     if(enabled == up) return;
@@ -33,13 +55,42 @@ void Link::Transmit(Port *from, FramePtr frame)
 
     ++from->tx;
 
-    if(scheduler != nullptr)
+    if(lossPct > 0.0)
     {
-        scheduler->TapFrame(scheduler->Now(), *frame);
-        scheduler->ScheduleAfter(delay, std::make_unique<FrameDelivery>(to, std::move(frame)));
+        std::uniform_real_distribution<double> dist(0.0, 100.0);
+        if(dist(rng) < lossPct)
+        {
+            ++from->drop;
+            return;
+        }
     }
-    else
-        to->Receive(std::move(frame));
+
+    uint64_t extra = 0;
+    if(jitter > 0)
+    {
+        std::uniform_int_distribution<uint64_t> dist(0, jitter);
+        extra = dist(rng);
+    }
+
+    if(scheduler != nullptr)
+        scheduler->TapFrame(scheduler->Now(), *frame);
+
+    auto deliver = [&]() {
+        if(scheduler != nullptr)
+            scheduler->ScheduleAfter(delay + extra,
+                std::make_unique<FrameDelivery>(to, frame));
+        else
+            to->Receive(frame);
+    };
+
+    deliver();
+
+    if(dupPct > 0.0)
+    {
+        std::uniform_real_distribution<double> dist(0.0, 100.0);
+        if(dist(rng) < dupPct)
+            deliver();
+    }
 }
 
 Port *Link::Other(Port *from) const

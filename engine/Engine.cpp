@@ -17,8 +17,10 @@ uint64_t Engine::Now() const { return now; }
 void Engine::Run()
 {
     stopped = false;
+    halted = false;
     while(true)
     {
+        if(halted) break;
         if(shouldStop && shouldStop()) { stopped = true; break; }
         if(!Step()) break;
     }
@@ -27,8 +29,10 @@ void Engine::Run()
 void Engine::RunUntil(uint64_t time)
 {
     stopped = false;
+    halted = false;
     while(!queue.Empty() && (queue.Top()->time <= time))
     {
+        if(halted) break;
         if(shouldStop && shouldStop()) { stopped = true; break; }
         Step();
     }
@@ -43,6 +47,12 @@ void Engine::Reset()
 
 void Engine::ScheduleAt(uint64_t time, std::unique_ptr<Event> ev)
 {
+    if(maxEvents > 0 && queue.Size() >= maxEvents)
+    {
+        halted = true;
+        return;
+    }
+
     if(time < now) time = now;
 
     ev->time = time;

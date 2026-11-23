@@ -5,6 +5,7 @@
 #include "Clock.hpp"
 #include "EventQueue.hpp"
 #include <cstdint>
+#include <cstddef>
 #include <memory>
 #include <functional>
 
@@ -12,9 +13,13 @@ struct EthernetFrame;
 
 struct Engine: Scheduler, Clock
 {
+    static constexpr std::size_t kDefaultMaxEvents = 5000000;
+
     EventQueue queue;
     uint64_t now = 0;
     uint64_t seq = 0;
+    std::size_t maxEvents = kDefaultMaxEvents;
+    bool halted = false;
     std::function<void(uint64_t, const char *)> trace;
     std::function<void(uint64_t, const EthernetFrame &)> frameTap;
     std::function<bool()> shouldStop;

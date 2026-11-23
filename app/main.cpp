@@ -2,15 +2,19 @@
 #include "../topo/Topology.hpp"
 #include "../topo/CommandRunner.hpp"
 #include "../topo/JsonConfig.hpp"
+#include "../device/Device.hpp"
 #include "Version.hpp"
+#include "LineEditor.hpp"
 
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <stdexcept>
 #include <cstddef>
 #include <csignal>
+#include <cstdlib>
 
 #ifdef HAVE_LUA
 #include "../script/LuaScript.hpp"
@@ -29,6 +33,100 @@ static bool EndsWith(const std::string &s, const std::string &suffix)
            s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
+static std::string JsonString(const std::string &s)
+{
+    std::string o = "\"";
+    for(char c : s)
+    {
+        switch(c)
+        {
+        case '"':  o += "\\\""; break;
+        case '\\': o += "\\\\"; break;
+        case '\n': o += "\\n"; break;
+        case '\r': o += "\\r"; break;
+        case '\t': o += "\\t"; break;
+        default:
+            if(static_cast<unsigned char>(c) < 0x20) o += ' ';
+            else o += c;
+        }
+    }
+    o += "\"";
+    return o;
+}
+
+struct Reporter
+{
+    bool json = false;
+    std::ofstream log;
+    bool hasLog = false;
+
+    void record(const std::string &j)
+    {
+        if(json) std::cout << j << "\n";
+        if(hasLog) log << j << "\n";
+    }
+};
+
+struct CmdResult
+{
+    bool ok = true;
+    std::string out;
+    std::string err;
+};
+
+static CmdResult RunCaptured(CommandContext &ctx, const std::string &line)
+{
+    CmdResult r;
+    std::ostringstream oss;
+    std::streambuf *old = std::cout.rdbuf(oss.rdbuf());
+    try
+    {
+        RunScriptLine(ctx, line);
+    }
+    catch(const std::exception &e)
+    {
+        r.ok = false;
+        r.err = e.what();
+    }
+    std::cout.rdbuf(old);
+    r.out = oss.str();
+    return r;
+}
+
+static std::string CmdJson(int line, const std::string &cmd, const CmdResult &r)
+{
+    std::ostringstream o;
+    o << "{\"line\":" << line
+      << ",\"cmd\":" << JsonString(cmd)
+      << ",\"ok\":" << (r.ok ? "true" : "false")
+      << ",\"output\":" << JsonString(r.out);
+    if(!r.ok) o << ",\"error\":" << JsonString(r.err);
+    o << "}";
+    return o.str();
+}
+
+static std::string SummaryJson(Topology &topo, Engine &engine, bool ok, int exitCode)
+{
+    std::ostringstream o;
+    o << "{\"summary\":{\"ok\":" << (ok ? "true" : "false")
+      << ",\"exit\":" << exitCode
+      << ",\"time\":" << engine.Now()
+      << ",\"devices\":" << topo.devices.size()
+      << ",\"links\":" << topo.links.size()
+      << "},\"state\":" << StateSnapshot(topo, engine) << "}";
+    return o.str();
+}
+
+static int Fail(Reporter &rep, Topology &topo, Engine &engine, const std::string &msg)
+{
+    if(rep.json || rep.hasLog)
+        rep.record("{\"error\":" + JsonString(msg) + "}");
+    if(!rep.json)
+        std::cerr << "error: " << msg << "\n";
+    rep.record(SummaryJson(topo, engine, false, 1));
+    return 1;
+}
+
 static void PrintUsage(const char *prog)
 {
     std::cout
@@ -43,6 +141,8 @@ static void PrintUsage(const char *prog)
         << "      --keep-going    continue after a script error\n"
         << "      --no-lua        refuse to run .lua scripts\n"
         << "  -i, --interactive   enter the prompt after loading a file\n"
+        << "      --json          emit NDJSON records (requires a file)\n"
+        << "      --log <file>    also append JSON records to a file\n"
         << "  -f, --file <path>   run a scene/script file\n\n"
         << "Files:\n"
         << "  .yn / .json   load a scene (topology)\n"
@@ -54,114 +154,223 @@ static void PrintUsage(const char *prog)
         << "  " << prog << " -i tests/config.yn    # load, then prompt\n"
         << "  " << prog << " tests/auto_ping.txt\n"
         << "  " << prog << " tests/lua_ping.lua\n"
+        << "  " << prog << " --json tests/auto_ping.txt\n"
         << "  echo demo | " << prog << "\n\n"
         << "Press Ctrl-C to interrupt a running simulation.\n";
 }
 
 static void RunInteractive(CommandContext &ctx)
 {
+    const char *home = std::getenv("HOME");
+    std::string hist = (home ? std::string(home) : std::string(".")) + "/.yanas_history";
+    LineEditor::LoadHistory(hist);
+    LineEditor::SetCompleter([&ctx](const std::string &buffer) {
+        static const char *cmds[] = {
+            "add-device", "add-port", "connect", "add-route", "set-vlan",
+            "set-trunk", "set-stp", "set-stp-mode", "set-bridge", "stp-status",
+            "set-link", "stats", "remove-device", "remove-port", "disconnect",
+            "rename-device", "set-ip", "state", "set-gateway", "arp", "ping",
+            "run", "step", "trace", "lookup", "bench", "pcap", "save", "load",
+            "new", "demo", "help", "quit", "exit",
+            "devices", "links", "ports", "routes", "arp-table", "mac-table",
+            "traceroute", "export", "udp-echo", "udp-send", "map", "generate",
+            "tcp-listen", "tcp-connect",
+            "dhcp-server", "dhcp-client", "dns-server", "dns-record", "dns-query",
+            "nat", "nat-port", "nat-table",
+            "rip", "rip-status",
+            "ospf", "ospf-status", "ospf-auth",
+            "tcp-lite-echo", "tcp-lite-echo-client", "acl"
+        };
+        std::vector<std::string> out;
+        std::size_t sp = buffer.find_last_of(' ');
+        bool first = (sp == std::string::npos);
+        std::string prefix = first ? buffer : buffer.substr(sp + 1);
+
+        if(first)
+        {
+            for(const char *c : cmds)
+            {
+                std::string s(c);
+                if(s.compare(0, prefix.size(), prefix) == 0) out.push_back(s);
+            }
+        }
+        else if(ctx.topo)
+        {
+            std::string lead = buffer.substr(0, sp + 1);
+
+            std::size_t firstSp = buffer.find(' ');
+            if(firstSp != std::string::npos && buffer.substr(0, firstSp) == "export" &&
+               buffer.find(' ', firstSp + 1) == std::string::npos)
+            {
+                for(const char *s : { "dot", "svg" })
+                {
+                    std::string cand(s);
+                    if(cand.compare(0, prefix.size(), prefix) == 0)
+                        out.push_back("export " + cand);
+                }
+                return out;
+            }
+
+            std::size_t colon = prefix.find(':');
+            if(colon != std::string::npos)
+            {
+                std::string dev = prefix.substr(0, colon);
+                auto it = ctx.topo->devices.find(dev);
+                if(it != ctx.topo->devices.end())
+                {
+                    std::size_t count = it->second->portList.size();
+                    for(std::size_t i = 0; i < count; ++i)
+                    {
+                        std::string cand = dev + ":" + std::to_string(i);
+                        if(cand.compare(0, prefix.size(), prefix) == 0)
+                            out.push_back(lead + cand);
+                    }
+                    return out;
+                }
+            }
+
+            for(const auto &kv : ctx.topo->devices)
+                if(kv.first.compare(0, prefix.size(), prefix) == 0)
+                    out.push_back(lead + kv.first);
+        }
+        return out;
+    });
+
     std::cout << YANAS_NAME << " " << YANAS_VERSION << " - type 'help' (try 'demo')\n";
+
     std::string line;
-    while (!ctx.quit)
+    while(!ctx.quit)
     {
-        std::cout << "> " << std::flush;
-        if (!std::getline(std::cin, line))
+        if(!LineEditor::ReadLine("> ", line))
             break;
+        if(line.empty())
+            continue;
+        LineEditor::AddHistory(line);
         try
         {
             RunScriptLine(ctx, line);
         }
-        catch (const std::exception &e)
+        catch(const std::exception &e)
         {
             std::cerr << "error: " << e.what() << "\n";
         }
     }
+
+    LineEditor::SaveHistory(hist);
 }
 
-static int RunFile(Engine &engine, CommandContext &ctx,
-                   const std::string &file, bool allowLua,
-                   bool keepGoing, bool quiet)
+static int RunFile(Engine &engine, CommandContext &ctx, const std::string &file,
+                   bool allowLua, bool keepGoing, bool quiet, Reporter &rep)
 {
-    if (EndsWith(file, ".lua"))
+    if(EndsWith(file, ".lua"))
     {
-        if (!allowLua)
-        {
-            std::cerr << "error: Lua disabled by --no-lua\n";
-            return 1;
-        }
+        if(!allowLua)
+            return Fail(rep, *ctx.topo, engine, "Lua disabled by --no-lua");
 #ifdef HAVE_LUA
-        std::string err;
-        if (!RunLuaFile(engine, *ctx.topo, file, err))
+        std::string out, err;
+        bool ok;
         {
-            std::cerr << "lua: " << err << "\n";
-            return 1;
+            std::ostringstream oss;
+            std::streambuf *old = std::cout.rdbuf(oss.rdbuf());
+            ok = RunLuaFile(engine, *ctx.topo, file, err);
+            std::cout.rdbuf(old);
+            out = oss.str();
         }
-        if (!quiet) std::cout << "done; now=" << engine.Now() << "\n";
-        return 0;
+        if(rep.json || rep.hasLog)
+        {
+            std::ostringstream o;
+            o << "{\"lua\":" << JsonString(file)
+              << ",\"ok\":" << (ok ? "true" : "false")
+              << ",\"output\":" << JsonString(out);
+            if(!ok) o << ",\"error\":" << JsonString(err);
+            o << "}";
+            rep.record(o.str());
+        }
+        if(!rep.json)
+        {
+            std::cout << out;
+            if(!ok) std::cerr << "lua: " << err << "\n";
+            if(!quiet && ok) std::cout << "done; now=" << engine.Now() << "\n";
+        }
+        rep.record(SummaryJson(*ctx.topo, engine, ok, ok ? 0 : 1));
+        return ok ? 0 : 1;
 #else
-        std::cerr << "error: Lua support not built\n";
-        return 1;
+        return Fail(rep, *ctx.topo, engine, "Lua support not built");
 #endif
     }
 
-    if (EndsWith(file, ".yn") || EndsWith(file, ".json"))
+    if(EndsWith(file, ".yn") || EndsWith(file, ".json"))
     {
         std::vector<std::string> cmds;
         LayoutMap layout;
         std::string err;
-        if (!ParseConfigJson(file, cmds, layout, err))
-        {
-            std::cerr << "error: " << err << "\n";
-            return 1;
-        }
+        if(!ParseConfigJson(file, cmds, layout, err))
+            return Fail(rep, *ctx.topo, engine, err);
+        if(cmds.size() > 100000)
+            return Fail(rep, *ctx.topo, engine, "scene has too many commands (limit 100000)");
 
         int status = 0;
-        for (std::size_t i = 0; i < cmds.size(); ++i)
+        bool allOk = true;
+        for(std::size_t i = 0; i < cmds.size(); ++i)
         {
-            try
+            CmdResult r = RunCaptured(ctx, cmds[i]);
+            if(rep.json || rep.hasLog) rep.record(CmdJson(int(i + 1), cmds[i], r));
+            if(!rep.json)
             {
-                RunScriptLine(ctx, cmds[i]);
+                std::cout << r.out;
+                if(!r.ok) std::cerr << file << ":" << (i + 1) << ": error: " << r.err << "\n";
             }
-            catch (const std::exception &e)
-            {
-                std::cerr << file << ":" << (i + 1) << ": error: " << e.what() << "\n";
-                status = 1;
-                if (!keepGoing) break;
-            }
+            if(!r.ok) { status = 1; allOk = false; if(!keepGoing) break; }
+            if(ctx.quit) break;
         }
-        if (!quiet)
+        if(!rep.json && !quiet && allOk)
             std::cout << "loaded " << cmds.size() << " commands from " << file
                       << "; now=" << engine.Now() << "\n";
+        rep.record(SummaryJson(*ctx.topo, engine, allOk, status));
         return status;
     }
 
     std::ifstream in(file);
-    if (!in)
-    {
-        std::cerr << "error: cannot open '" << file << "'\n";
-        return 1;
-    }
+    if(!in)
+        return Fail(rep, *ctx.topo, engine, "cannot open '" + file + "'");
+
+    in.seekg(0, std::ios::end);
+    std::streamoff fileSize = in.tellg();
+    in.seekg(0, std::ios::beg);
+    if(fileSize < 0 || fileSize > (16 * 1024 * 1024))
+        return Fail(rep, *ctx.topo, engine, "script too large (16 MiB limit)");
 
     int status = 0;
-    std::string line;
+    bool allOk = true;
     int lineNo = 0;
-    while (std::getline(in, line))
+    std::string line;
+    while(std::getline(in, line))
     {
         ++lineNo;
-        if (ctx.quit) break;
-        try
+        if(lineNo > 1000000)
         {
-            RunScriptLine(ctx, line);
-        }
-        catch (const std::exception &e)
-        {
-            std::cerr << file << ":" << lineNo << ": error: " << e.what() << "\n";
+            if(rep.json || rep.hasLog)
+                rep.record("{\"error\":" + JsonString("too many lines (limit 1000000)") + "}");
+            if(!rep.json) std::cerr << file << ": too many lines (limit 1000000)\n";
             status = 1;
-            if (!keepGoing) break;
+            allOk = false;
+            break;
         }
+
+        CmdResult r = RunCaptured(ctx, line);
+        if(rep.json || rep.hasLog) rep.record(CmdJson(lineNo, line, r));
+        if(!rep.json)
+        {
+            std::cout << r.out;
+            if(!r.ok) std::cerr << file << ":" << lineNo << ": error: " << r.err << "\n";
+        }
+        if(!r.ok) { status = 1; allOk = false; if(!keepGoing) break; }
+        if(ctx.quit) break;
     }
 
-    if (!quiet) std::cout << "done; now=" << engine.Now() << "\n";
+    if(!rep.json && !quiet && allOk)
+        std::cout << "done; now=" << engine.Now() << "\n";
+    rep.record(SummaryJson(*ctx.topo, engine, allOk, status));
     return status;
 }
 
@@ -182,23 +391,17 @@ int main(int argc, char **argv)
     ctx.topo = &topo;
 
     std::string file;
+    std::string logPath;
     bool haveFile = false;
-    bool quiet = false, keepGoing = false, allowLua = true, forceInteractive = false;
+    bool quiet = false, keepGoing = false, allowLua = true;
+    bool forceInteractive = false, json = false;
 
-    for (int i = 1; i < argc; ++i)
+    for(int i = 1; i < argc; ++i)
     {
         std::string a = argv[i];
-        if (a == "-h" || a == "--help")
-        {
-            PrintUsage(argv[0]);
-            return 0;
-        }
-        else if (a == "--version")
-        {
-            std::cout << YANAS_NAME << " " << YANAS_VERSION << "\n";
-            return 0;
-        }
-        else if (a == "--features")
+        if(a == "-h" || a == "--help") { PrintUsage(argv[0]); return 0; }
+        else if(a == "--version") { std::cout << YANAS_NAME << " " << YANAS_VERSION << "\n"; return 0; }
+        else if(a == "--features")
         {
             std::cout << "core";
 #ifdef HAVE_LUA
@@ -207,34 +410,23 @@ int main(int argc, char **argv)
             std::cout << "\n";
             return 0;
         }
-        else if (a == "-q" || a == "--quiet")
+        else if(a == "-q" || a == "--quiet") quiet = true;
+        else if(a == "--keep-going") keepGoing = true;
+        else if(a == "--no-lua") allowLua = false;
+        else if(a == "--json") json = true;
+        else if(a == "-i" || a == "--interactive") forceInteractive = true;
+        else if(a == "--log")
         {
-            quiet = true;
+            if(i + 1 >= argc) { std::cerr << "error: --log needs a path\n"; return 2; }
+            logPath = argv[++i];
         }
-        else if (a == "--keep-going")
+        else if(a == "-f" || a == "--file" || a == "--script" || a == "--scene")
         {
-            keepGoing = true;
-        }
-        else if (a == "--no-lua")
-        {
-            allowLua = false;
-        }
-        else if (a == "-i" || a == "--interactive")
-        {
-            forceInteractive = true;
-        }
-        else if (a == "-f" || a == "--file" || a == "--script" || a == "--scene")
-        {
-            if (i + 1 >= argc)
-            {
-                std::cerr << "error: " << a << " needs a path\n";
-                PrintUsage(argv[0]);
-                return 2;
-            }
+            if(i + 1 >= argc) { std::cerr << "error: " << a << " needs a path\n"; return 2; }
             file = argv[++i];
             haveFile = true;
         }
-        else if (!a.empty() && a[0] == '-')
+        else if(!a.empty() && a[0] == '-')
         {
             std::cerr << "error: unknown option '" << a << "'\n";
             PrintUsage(argv[0]);
@@ -247,9 +439,34 @@ int main(int argc, char **argv)
         }
     }
 
+    if(json && !haveFile)
+    {
+        std::cerr << "error: --json requires a file\n";
+        PrintUsage(argv[0]);
+        return 2;
+    }
+    if(json && forceInteractive)
+    {
+        std::cerr << "error: --json cannot be combined with -i\n";
+        return 2;
+    }
+
     ctx.quiet = quiet;
 
-    if (!haveFile)
+    Reporter rep;
+    rep.json = json;
+    if(!logPath.empty())
+    {
+        rep.log.open(logPath);
+        if(!rep.log)
+        {
+            std::cerr << "error: cannot open log '" << logPath << "'\n";
+            return 1;
+        }
+        rep.hasLog = true;
+    }
+
+    if(!haveFile)
     {
         RunInteractive(ctx);
         return 0;
@@ -258,15 +475,15 @@ int main(int argc, char **argv)
     int status = 0;
     try
     {
-        status = RunFile(engine, ctx, file, allowLua, keepGoing, quiet);
+        status = RunFile(engine, ctx, file, allowLua, keepGoing, quiet, rep);
     }
-    catch (const std::exception &e)
+    catch(const std::exception &e)
     {
         std::cerr << "fatal: " << e.what() << "\n";
         status = 1;
     }
 
-    if (forceInteractive)
+    if(forceInteractive)
         RunInteractive(ctx);
 
     return status;

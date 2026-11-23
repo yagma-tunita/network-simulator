@@ -146,6 +146,85 @@ namespace
             || c == "new" || c == "demo" || c == "state";
     }
 
+    void PrintCommandHelp(const std::string &c)
+    {
+        struct HelpItem { const char *name; const char *usage; };
+        static const HelpItem items[] = {
+            { "add-device", "add-device <name> end|switch|router" },
+            { "add-port", "add-port <device> <mac> [<ip>/<prefix>]" },
+            { "connect", "connect <dev:idx> <dev:idx> [delay]" },
+            { "add-route", "add-route <router> <dst/p> <next-hop-ip>" },
+            { "set-vlan", "set-vlan <dev:idx> <vid>" },
+            { "set-trunk", "set-trunk <dev:idx> [native-vid]" },
+            { "set-stp", "set-stp <switch> on|off" },
+            { "set-stp-mode", "set-stp-mode <switch> stp|rstp" },
+            { "set-bridge", "set-bridge <switch> <priority>" },
+            { "stp-status", "stp-status <switch>" },
+            { "set-link", "set-link <dev:idx> down|up" },
+            { "stats", "stats <device>" },
+            { "devices", "devices" },
+            { "links", "links" },
+            { "ports", "ports <device>" },
+            { "routes", "routes <router>" },
+            { "arp-table", "arp-table <device>" },
+            { "mac-table", "mac-table <switch>" },
+            { "traceroute", "traceroute <device> <target-ip> [max-hops]" },
+            { "export", "export dot|svg <file>" },
+            { "udp-echo", "udp-echo <device> on|off [port]" },
+            { "udp-send", "udp-send <device> <ip> <dport> <text...>" },
+            { "tcp-listen", "tcp-listen <device> on|off [port]" },
+            { "tcp-connect", "tcp-connect <device> <ip> <port> [text...]" },
+            { "dhcp-server", "dhcp-server <device> on <start> <end> <prefix> <gateway> [dns] | off" },
+            { "dhcp-client", "dhcp-client <device> [port-index]" },
+            { "dns-server", "dns-server <device> on|off" },
+            { "dns-record", "dns-record <device> <name> <ip>" },
+            { "dns-query", "dns-query <device> [server-ip] <name>" },
+            { "nat", "nat <router> on <inside-dev:idx> <outside-dev:idx> | off" },
+            { "nat-port", "nat-port <router> tcp|udp <public-port> <inside-ip> <inside-port>" },
+            { "nat-table", "nat-table <router>" },
+            { "rip", "rip <router> on|off" },
+            { "rip-status", "rip-status <router>" },
+            { "ospf", "ospf <router> on|off" },
+            { "ospf-status", "ospf-status <router>" },
+            { "ospf-auth", "ospf-auth <router> none|simple <password>" },
+            { "tcp-lite-echo", "tcp-lite-echo <device> on|off [port]" },
+            { "tcp-lite-echo-client", "tcp-lite-echo-client <device> <ip> <port> <text...>" },
+            { "acl", "acl <router> in|out allow|deny <src/p> <dst/p> <proto|any>" },
+            { "map", "map" },
+            { "generate", "generate tree <depth> <fanout>" },
+            { "remove-device", "remove-device <name>" },
+            { "remove-port", "remove-port <dev:idx>" },
+            { "disconnect", "disconnect <dev:idx>" },
+            { "rename-device", "rename-device <old> <new>" },
+            { "set-ip", "set-ip <dev:idx> <ip>/<prefix>" },
+            { "set-gateway", "set-gateway <device> <gw-ip>" },
+            { "arp", "arp <device> <target-ip>" },
+            { "ping", "ping <device> <target-ip> [ttl]" },
+            { "state", "state" },
+            { "pcap", "pcap <file> | pcap off" },
+            { "save", "save <file.yn>" },
+            { "load", "load <file.yn>" },
+            { "lookup", "lookup <device> <ip>" },
+            { "bench", "bench [n]" },
+            { "run", "run [duration]" },
+            { "step", "step [n]" },
+            { "trace", "trace on|off" },
+            { "new", "new" },
+            { "demo", "demo" },
+            { "quit", "quit | exit" }
+        };
+
+        for(const HelpItem &h : items)
+        {
+            if(c == h.name)
+            {
+                std::cout << "usage: " << h.usage << "\n";
+                return;
+            }
+        }
+        std::cout << "no help for '" << c << "' (see 'help')\n";
+    }
+
     void RunControl(CommandContext &ctx, const Tokens &t)
     {
         const std::string &c = t[0];
@@ -157,7 +236,10 @@ namespace
         }
         if (c == "help")
         {
-            PrintHelp();
+            if (t.size() >= 2)
+                PrintCommandHelp(t[1]);
+            else
+                PrintHelp();
             return;
         }
         if (c == "run")
@@ -170,6 +252,8 @@ namespace
             {
                 if (ctx.engine->stopped)
                     std::cout << "interrupted; now=" << ctx.engine->Now() << "\n";
+                else if (ctx.engine->halted)
+                    std::cout << "halted (event limit); now=" << ctx.engine->Now() << "\n";
                 else
                     std::cout << "ran; now=" << ctx.engine->Now() << "\n";
             }
@@ -213,9 +297,16 @@ namespace
             if (n > kMaxBench) n = kMaxBench;
 
             auto t0 = std::chrono::steady_clock::now();
-            for (uint64_t i = 0; i < n; i++)
-                ctx.engine->ScheduleAfter(0, std::make_unique<NopEvent>());
-            ctx.engine->Run();
+            const uint64_t kChunk = 50000;
+            uint64_t done = 0;
+            while (done < n)
+            {
+                uint64_t k = (n - done < kChunk) ? (n - done) : kChunk;
+                for (uint64_t i = 0; i < k; i++)
+                    ctx.engine->ScheduleAfter(0, std::make_unique<NopEvent>());
+                ctx.engine->Run();
+                done += k;
+            }
             auto t1 = std::chrono::steady_clock::now();
 
             double sec = std::chrono::duration<double>(t1 - t0).count();
@@ -236,9 +327,11 @@ namespace
             if (t.size() == 2 && t[1] == "off")
             {
                 uint64_t n = ctx.pcap ? ctx.pcap->Count() : 0;
+                bool over = ctx.pcap && ctx.pcap->overflow;
                 ctx.pcap.reset();
                 ctx.engine->frameTap = nullptr;
-                std::cout << "pcap: " << n << " frames captured\n";
+                std::cout << "pcap: " << n << " frames captured"
+                          << (over ? " (limit reached)" : "") << "\n";
                 return;
             }
             if (t.size() != 2)
@@ -317,6 +410,11 @@ namespace
     }
 }
 
+std::string StateSnapshot(Topology &topo, Engine &engine)
+{
+    return StateJson(topo, engine);
+}
+
 void PrintHelp()
 {
     std::cout <<
@@ -334,8 +432,37 @@ void PrintHelp()
         "  set-stp-mode <switch> stp|rstp\n"
         "  set-bridge <switch> <priority>\n"
         "  stp-status <switch>\n"
-        "  set-link   <dev:idx> down|up\n"
+        "  set-link   <dev:idx> down|up|loss|dup|jitter|clear ...\n"
         "  stats      <device>\n"
+        "  devices | links\n"
+        "  ports      <device>\n"
+        "  routes     <router>\n"
+        "  arp-table  <device>\n"
+        "  mac-table  <switch>\n"
+        "  traceroute <device> <target-ip> [max-hops]\n"
+        "  export     dot|svg <file>\n"
+        "  udp-echo   <device> on|off [port]\n"
+        "  udp-send   <device> <ip> <dport> <text...>\n"
+        "  tcp-listen <device> on|off [port]\n"
+        "  tcp-connect <device> <ip> <port> [text...]\n"
+        "  dhcp-server <device> on <start> <end> <prefix> <gateway> [dns] | off\n"
+        "  dhcp-client <device> [port-index]\n"
+        "  dns-server <device> on|off\n"
+        "  dns-record <device> <name> <ip>\n"
+        "  dns-query  <device> [server-ip] <name>\n"
+        "  nat        <router> on <inside-dev:idx> <outside-dev:idx> | off\n"
+        "  nat-port   <router> tcp|udp <public-port> <inside-ip> <inside-port>\n"
+        "  nat-table  <router>\n"
+        "  rip        <router> on|off\n"
+        "  rip-status <router>\n"
+        "  ospf       <router> on|off\n"
+        "  ospf-status <router>\n"
+        "  ospf-auth  <router> none|simple <password>\n"
+        "  tcp-lite-echo   <device> on|off [port]\n"
+        "  tcp-lite-echo-client <device> <ip> <port> <text...>\n"
+        "  acl        <router> in|out allow|deny <src/p> <dst/p> <proto|any>\n"
+        "  map\n"
+        "  generate   tree <depth> <fanout>\n"
         "  remove-device <name>\n"
         "  remove-port   <dev:idx>\n"
         "  disconnect    <dev:idx>\n"

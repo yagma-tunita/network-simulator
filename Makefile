@@ -1,10 +1,16 @@
 CXX ?= g++
-CXXFLAGS ?= -std=c++17 -Wall -Wextra -Werror -O2
+CXXFLAGS ?= -std=c++17 -Wall -Wextra -O2
+WERROR ?= 1
+ifeq ($(WERROR),1)
+CXXFLAGS += -Werror
+endif
+COVERAGE ?= 0
 
 VERSION := $(shell cat VERSION 2>/dev/null || echo 0.0.0)
 PREFIX ?= /usr/local
 
 CC ?= cc
+GO ?= go
 AR ?= ar
 
 LUA_DIR := third_party/lua
@@ -14,12 +20,17 @@ LUA_LIB := build/liblua.a
 
 CXXFLAGS += -DHAVE_LUA -I$(LUA_DIR)
 
-LIB_SRCS := $(wildcard core/*.cpp device/*.cpp link/*.cpp engine/*.cpp topo/*.cpp)
+ifeq ($(COVERAGE),1)
+CXXFLAGS += -O0 -g --coverage
+COVERAGE_LDFLAGS := --coverage
+endif
+
+LIB_SRCS := $(wildcard core/*.cpp device/*.cpp link/*.cpp engine/*.cpp topo/*.cpp netstack/*.cpp)
 APP_SRCS := $(wildcard app/*.cpp)
 SRCS := $(LIB_SRCS) $(APP_SRCS) script/LuaScript.cpp
 LDLIBS := $(LUA_LIB) -lm
 
-OBJS := $(SRCS:.cpp=.o)
+OBJS := $(patsubst %.cpp,build/obj/%.o,$(SRCS))
 DEPS := $(OBJS:.o=.d)
 TARGET := netsim
 
@@ -31,16 +42,17 @@ UNIT_BIN := build/unit_tests
 FUZZ_SRC := tests/fuzz_parsers.cpp
 FUZZ_BIN := build/fuzz_parsers
 
-.PHONY: all clean test unit fuzz san tidy dist install
+.PHONY: all clean test unit fuzz san tidy dist install coverage soak perf check tools
 
 TIDY ?= clang-tidy
 
 all: $(TARGET)
 
 $(TARGET): $(OBJS) $(LUA_LIB)
-	$(CXX) $(CXXFLAGS) $(OBJS) -o $@ $(LDLIBS)
+	$(CXX) $(CXXFLAGS) $(OBJS) -o $@ $(LDLIBS) $(COVERAGE_LDFLAGS)
 
-%.o: %.cpp
+build/obj/%.o: %.cpp
+	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
 build/lua/%.o: $(LUA_DIR)/%.c
@@ -77,10 +89,13 @@ tidy:
 dist: $(TARGET)
 	@mkdir -p dist
 	tar czf dist/yanas-net-$(VERSION).tar.gz \
-		--exclude='*.o' --exclude='*.a' --exclude='*.d' \
-		$(TARGET) win docs third_party packaging Makefile Makefile.win \
+		--exclude='*.o' --exclude='*.a' --exclude='*.d' --exclude='dist' \
+		core device link engine topo netstack app script tests win docs examples third_party packaging \
+		CMakeLists.txt Makefile Makefile.win .github .clang-tidy .gitignore .gitattributes \
+		$(TARGET) \
 		$(if $(wildcard netsim.exe),netsim.exe) \
-		README.md LICENSE THIRD_PARTY_NOTICES.md VERSION CHANGELOG.md DEVELOPMENT_LOG.md
+		README.md LICENSE COPYRIGHT THIRD_PARTY_NOTICES.md SOURCE-CODE.md \
+		CONTRIBUTING.md SECURITY.md VERSION CHANGELOG.md DEVELOPMENT_LOG.md
 	@echo "wrote dist/yanas-net-$(VERSION).tar.gz"
 
 install: $(TARGET)
@@ -90,14 +105,34 @@ install: $(TARGET)
 	install -m 644 docs/netsim.1 $(DESTDIR)$(PREFIX)/share/man/man1/netsim.1
 	@echo "installed netsim to $(DESTDIR)$(PREFIX)/bin"
 
+coverage:
+	bash tests/coverage.sh
+
+soak:
+	bash tests/soak.sh
+
+perf:
+	bash tests/perf.sh
+
+check: test coverage soak perf
+	@$(MAKE) clean >/dev/null 2>&1
+	@echo "check complete"
+
+tools:
+	@mkdir -p build
+	cd tools/ynstress && $(GO) build -o ../../build/ynstress .
+	@echo "built build/ynstress"
+
 test: $(UNIT_BIN) $(FUZZ_BIN) $(TARGET)
 	ASAN_OPTIONS=detect_leaks=1 ./$(UNIT_BIN)
 	ASAN_OPTIONS=detect_leaks=1 ./$(FUZZ_BIN)
 	bash tests/run_tests.sh
 
 clean:
-	rm -f $(OBJS) $(DEPS) $(TARGET)
-	rm -f script/*.o script/*.d
+	rm -f $(TARGET)
 	rm -rf build
+	find . \( -name '*.o' -o -name '*.d' \) -delete 2>/dev/null || true
+	find . \( -name '*.gcda' -o -name '*.gcno' \) -delete 2>/dev/null || true
+	rm -f *.gcov
 
 -include $(DEPS)

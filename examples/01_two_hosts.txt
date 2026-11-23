@@ -1,0 +1,8 @@
+# Two hosts on a direct link: ARP resolves, then ICMP echo succeeds.
+add-device PC1 end
+add-device PC2 end
+add-port PC1 aa:aa:aa:aa:aa:01 192.168.1.1/24
+add-port PC2 aa:aa:aa:aa:aa:02 192.168.1.2/24
+connect PC1:0 PC2:0
+ping PC1 192.168.1.2
+run

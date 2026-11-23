@@ -1,5 +1,11 @@
 # Third-party notices
 
+## Project license
+
+yanas net itself is licensed under the **GNU General Public License v3.0 or
+later** (see `LICENSE` and `COPYRIGHT`). The third-party component below is
+compatible with that license.
+
 ## Lua 5.4.6
 
 The file `third_party/lua/` contains the Lua 5.4.6 sources used to build the

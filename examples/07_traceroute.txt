@@ -1,0 +1,15 @@
+# traceroute across a router: hop 1 is the router, hop 2 is the host.
+add-device PC1 end
+add-device PC2 end
+add-device R1 router
+add-port PC1 aa:aa:aa:aa:aa:01 192.168.1.1/24
+add-port R1 aa:00:00:00:00:01 192.168.1.254/24
+add-port PC2 aa:aa:aa:aa:aa:02 192.168.2.1/24
+add-port R1 aa:00:00:00:00:02 192.168.2.254/24
+connect PC1:0 R1:0
+connect R1:1 PC2:0
+set-gateway PC1 192.168.1.254
+traceroute PC1 192.168.2.1
+run
+ports R1
+routes R1

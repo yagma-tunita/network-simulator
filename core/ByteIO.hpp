@@ -21,6 +21,14 @@ namespace ByteIO
         buf.push_back(uint8_t(v));
     }
 
+    inline void AppendU32(std::vector<uint8_t> &buf, uint32_t v)
+    {
+        buf.push_back(uint8_t(v >> 24));
+        buf.push_back(uint8_t(v >> 16));
+        buf.push_back(uint8_t(v >> 8));
+        buf.push_back(uint8_t(v));
+    }
+
     inline void AppendIpv4(std::vector<uint8_t> &buf, const Ipv4 &ip)
     {
         buf.push_back(uint8_t(ip.value >> 24));
@@ -43,6 +51,14 @@ namespace ByteIO
     inline uint16_t ReadU16(const std::vector<uint8_t> &buf, std::size_t off)
     {
         return uint16_t((uint16_t(buf[off]) << 8) | uint16_t(buf[off + 1]));
+    }
+
+    inline uint32_t ReadU32(const std::vector<uint8_t> &buf, std::size_t off)
+    {
+        return (uint32_t(buf[off]) << 24)
+             | (uint32_t(buf[off + 1]) << 16)
+             | (uint32_t(buf[off + 2]) << 8)
+             |  uint32_t(buf[off + 3]);
     }
 
     inline Ipv4 ReadIpv4(const std::vector<uint8_t> &buf, std::size_t off)

@@ -1,0 +1,1 @@
+neighbor 10.0.1.1 state=Full pri=1

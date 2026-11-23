@@ -35,12 +35,19 @@ bool PcapWriter::Open(const std::string &path)
     Put32(fp, 1);
 
     count = 0;
+    bytes = 0;
+    overflow = false;
     return true;
 }
 
 void PcapWriter::Write(uint64_t t, const std::vector<uint8_t> &bytes)
 {
-    if(!fp) return;
+    if(!fp || overflow) return;
+    if(count >= maxFrames || (bytes.size() > maxBytes - this->bytes))
+    {
+        overflow = true;
+        return;
+    }
 
     Put32(fp, uint32_t(t));
     Put32(fp, 0);
@@ -50,6 +57,7 @@ void PcapWriter::Write(uint64_t t, const std::vector<uint8_t> &bytes)
         std::fwrite(bytes.data(), 1, bytes.size(), fp);
 
     ++count;
+    this->bytes += bytes.size();
 }
 
 void PcapWriter::Close()

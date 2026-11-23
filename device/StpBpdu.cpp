@@ -3,25 +3,6 @@
 
 using namespace ByteIO;
 
-namespace
-{
-    void AppendU32(std::vector<uint8_t> &buf, uint32_t v)
-    {
-        buf.push_back(uint8_t(v >> 24));
-        buf.push_back(uint8_t(v >> 16));
-        buf.push_back(uint8_t(v >> 8));
-        buf.push_back(uint8_t(v));
-    }
-
-    uint32_t ReadU32(const std::vector<uint8_t> &buf, std::size_t off)
-    {
-        return (uint32_t(buf[off]) << 24)
-             | (uint32_t(buf[off + 1]) << 16)
-             | (uint32_t(buf[off + 2]) << 8)
-             |  uint32_t(buf[off + 3]);
-    }
-}
-
 bool StpBpdu::operator==(const StpBpdu &o) const
 {
     return version == o.version && flags == o.flags

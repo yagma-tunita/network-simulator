@@ -1,0 +1,14 @@
+add-device PC1 end
+add-device PC2 end
+add-device SW1 switch
+add-port PC1 aa:aa:aa:aa:aa:01 10.0.0.1/24
+add-port PC2 aa:aa:aa:aa:aa:02 10.0.0.2/24
+add-port SW1 11:11:11:11:11:01
+add-port SW1 11:11:11:11:11:02
+connect PC1:0 SW1:0
+connect PC2:0 SW1:1
+ping PC1 10.0.0.2
+run
+ports PC1
+arp-table PC1
+mac-table SW1

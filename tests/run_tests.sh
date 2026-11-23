@@ -39,7 +39,9 @@ fi
 
 if [ -x ./netsim ]; then
     bash tests/cli_test.sh || status=1
+    bash tests/examples.sh || status=1
 fi
 
+rm -f tests/netsim_test.pcap tests/netsim_saved.yn
 make clean >/dev/null
 exit "$status"

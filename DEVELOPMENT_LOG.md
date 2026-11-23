@@ -671,6 +671,281 @@ Conventions:
 - Verified: WSL `make test` green (71 unit, fuzz, 17 scenarios + 3 Lua + CLI),
   Ctrl-C interruption, Windows `netsim.exe` build and smoke.
 
+## Phase 39 — Caps, line editing, JSON output, and quality gates (2026-11-22)
+
+- Hard resource caps: `Topology` limits devices (4096), ports (65536, 1024/device),
+  and links (65536); `Engine` caps the event queue (5,000,000) and sets `halted`
+  (the `run` command reports it); `PcapWriter` caps frames (2M) and bytes (256 MiB,
+  reports on `pcap off`); scripts are limited to 16 MiB / 1M lines and scenes to
+  100k commands.
+- Interactive line editor (`app/LineEditor`): POSIX termios and native Windows
+  console implementations with history (`↑`/`↓`), Tab completion (commands + device
+  names), Home/End, Ctrl-A/E/U/K, history persisted to `~/.yanas_history`; non-TTY
+  falls back to `std::getline`. Windows uses `ReadConsoleInputW` + VT rendering, so
+  it works in PowerShell/cmd.
+- Structured output: `--json` emits NDJSON (one `{line,cmd,ok,output,error}` per
+  command plus a final `{summary,state}`); `--log <file>` mirrors it to a file.
+  `StateSnapshot` is exposed from the command layer; Lua `print` now routes through
+  the captured stream.
+- Quality gates: `make check` = `make test` + `tests/coverage.sh` (gcov aggregate,
+  measured ~58%, threshold 55%), `tests/soak.sh` (256 MiB `ulimit -v`, STP
+  reconvergence), and `tests/perf.sh` (bench throughput floor 200k events/s).
+  `bench` now schedules in chunks to keep memory bounded.
+- Build/CI: `WERROR=0` toggle; portable `find -delete` cleanup; CI adds a `check`
+  job (coverage/soak/perf) and a macOS job; `make dist` now ships the full source
+  tree (core/device/link/engine/topo/app/script/tests, `.github`, etc.).
+- Unit tests extended to 137 checks (topology/event caps, engine ordering/trace,
+  JSON round-trip, ICMP errors, pcap caps, end-to-end host and router ping).
+- Verified locally: `make check` green (137 unit, fuzz, scenarios, CLI; coverage
+  ~58%; soak ok; perf ~11M events/s); Windows `netsim.exe` rebuilt and `--json`
+  / piped fallback verified.
+
+## Phase 40 — Open source under GPLv3 and project assets (2026-11-22)
+
+- License switched from the proprietary placeholder to the **GNU GPL v3.0 or
+  later**: `LICENSE` is now the GPLv3 text, `COPYRIGHT` was added, and
+  `SOURCE-CODE.md` documents source availability. Bundled Lua (MIT) is
+  GPL-compatible; its notice remains in `THIRD_PARTY_NOTICES.md`.
+- Binary distributions now include corresponding source: `make dist` produces the
+  source tarball, and `packaging/build-win.ps1` builds a source ZIP and embeds it
+  in the Windows CLI ZIP (GPLv3 section 6).
+- Added open-source project assets: `examples/` (two hosts, switch/VLAN, router,
+  STP, Lua, `.yn` scene), `docs/USER_GUIDE.md` (student walkthrough),
+  `CONTRIBUTING.md`, `SECURITY.md`, and `docs/logo.svg`.
+- Tests: `tests/examples.sh` runs every example and is wired into
+  `tests/run_tests.sh`/CI, so the examples stay runnable.
+- Docs: README license/examples/structure/status updated; man page gains a LICENSE
+  section.
+
+## Phase 41 — Diagnostics, traceroute, and topology export (2026-11-22)
+
+- `traceroute`: `EndDevice` sends sequential ICMP echo probes with TTL 1..N,
+  reusing the ARP/TTL/ICMP paths. Time Exceeded replies print each hop, timeouts
+  print `*`, and an echo reply prints the target and stops. Implemented with a
+  one-shot `trace-next` event between probes.
+- Diagnostics: `devices`, `links`, `ports <dev>`, `routes <router>`,
+  `arp-table <dev>`, `mac-table <switch>` (ages from the logical clock).
+- `export dot|svg`: new `topo/Export` writes a Graphviz DOT file or a self-contained
+  SVG topology diagram, so the network can be visualized without a GUI.
+- Tab completion now completes `dev:idx` port references and `export dot|svg`.
+- Tests: `tests/traceroute.txt`, `tests/show.txt`; `cli_test.sh` checks the show
+  commands and verifies the DOT/SVG files; `examples/07_traceroute.txt`.
+- Verified: `make test` green (144 unit checks, fuzz, 20 scenarios + 3 Lua + CLI +
+  7 examples); `make check` coverage 55.6% (floor 55%), soak and perf pass; Windows
+  `netsim.exe` rebuilt and `traceroute` / `show` / `export` verified.
+
+## Phase 42 — UDP, terminal map, and scale generator (2026-11-22)
+
+- UDP: added `core/UdpDatagram` (8-byte header + payload) and `IpPacket::kUdp`.
+  Hosts can run an echo service (`udp-echo <dev> on|off [port]`) and send datagrams
+  (`udp-send <dev> <ip> <dport> <text...>`); replies reuse the ARP/pending path.
+- Terminal usability: `map` prints an adjacency map (device kind, ports, links).
+- Scale: `generate tree <depth> <fanout>` builds a switch tree with one host per
+  leaf (capped for /24 and device limits); `tests/scale.txt` pings across a
+  3x3x3 tree (40 switches, 27 hosts).
+- Tests: `tests/udp.txt`, `tests/scale.txt`, `examples/08_udp.txt`, plus UDP,
+  UDP-echo, and command-layer unit tests (155 checks).
+- Docs: README/user guide/man updated for UDP, map, and tree generation.
+- Note: this is the first protocol-breadth slice; TCP, DHCP/DNS, ACL/NAT, dynamic
+  routing, IPv6, and parallel scenario batches remain follow-ups.
+
+## Phase 43 — Simplified TCP, ACLs, and per-command help (2026-11-22)
+
+- TCP: added `core/TcpSegment` (20-byte header + flags/payload) and
+  `IpPacket::kTcp`. Hosts can run a TCP echo service (`tcp-echo`) and a client
+  (`tcp-echo-client`) that performs SYN/SYN-ACK/ACK, sends data, receives the echo,
+  and closes with FIN. This is a simplified TCP (no retransmission/windowing).
+- ACLs: `Router` supports ordered inbound/outbound rules (`acl <router> in|out
+  allow|deny <src/p> <dst/p> <any|icmp|tcp|udp>`), evaluated per packet; denied
+  packets are dropped and counted.
+- UX: `help <command>` prints detailed usage.
+- Tests: `tests/tcp.txt`, `tests/acl.txt`, CLI `command-help` check, and unit tests
+  for `TcpSegment`, TCP echo end-to-end, and ACL deny (167 checks).
+- Docs: README/user guide/man/CHANGELOG updated.
+- Remaining roadmap: DHCP/DNS, NAT, dynamic routing (RIP/OSPF-lite), IPv4
+  fragmentation, IPv6, full RSTP, `--jobs` parallel scenarios, and the `src/`
+  restructure + CMake presets.
+
+## Phase 44 — Retract the "TCP" claim, add impairment and TCP wire groundwork (2026-11-22)
+
+- The simplified transport is now explicitly `tcp-lite` (commands, output, docs)
+  and is **not** advertised as TCP. Calling it TCP was misleading; a reliability-
+  focused product must not do that.
+- Link impairment: `set-link <dev:idx> loss|dup|jitter|clear ...` with a per-link
+  deterministic RNG; `tests/loss.txt` (100% loss → ping timeout) and
+  `tests/impair_clear.txt` (restore → ping succeeds).
+- TCP wire groundwork: `TcpSegment` now carries options and computes/verifies the
+  real ones-complement checksum over the IPv4 pseudo-header
+  (`ToBytes(src,dst)`, `TryFromBytes(...,src,dst)`).
+- Tests: `tests/tcp_lite.txt`; checksum/options unit tests; loss/impair scenarios.
+- Next: a real RFC 9293 TCP stack (state machine, retransmission, flow/congestion
+  control, options) built internally and exposed only after it passes loss/reorder
+  tests; then DHCP/DNS, NAT, dynamic routing, IPv6, full RSTP, and scale/engineering.
+
+## Phase 45 — Real TCP core (internal) (2026-11-22)
+
+- Added `netstack/TcpConnection`: state machine (Closed/Listening/SYN-SENT/
+  SYN-RCVD/ESTABLISHED/FIN-WAIT-1/2/CLOSE-WAIT/CLOSING/LAST-ACK/TIME-WAIT) with
+  sequence/ack handling, send/receive, out-of-order reassembly, RTO timer with
+  exponential backoff and retransmission, and FIN/TIME_WAIT.
+- Deliberately **not exposed** in the CLI: `tcp-lite` remains the only user-facing
+  transport (clearly experimental, not TCP) until the core passes more tests.
+- Tests: two `TcpConnection`s driven over a simulated wire under `Engine` —
+  handshake, data transfer, graceful close, and loss-driven retransmission
+  (`totalRetransmits > 0`); 175 unit checks. Coverage now includes `netstack`
+  (54.7%, floor 54).
+- Next: options (MSS/window scale/SACK), congestion control (slow start/CA/fast
+  retransmit), zero-window probes, keepalive, then expose `tcp-*` after loss/reorder
+  tests; then DHCP/DNS, NAT, dynamic routing, IPv6, full RSTP, scale/engineering.
+
+## Phase 46 — Real TCP exposed in the CLI (2026-11-23)
+
+- Wired `netstack/TcpConnection` into `EndDevice`: hosts now own a deque of TCP
+  connections. `HandleIp` tries `HandleTcpStack` first (real TCP) and falls back
+  to the deprecated `tcp-lite` path only when no TCP connection/listener matches.
+- New commands: `tcp-listen <device> on|off [port]` (real TCP echo service) and
+  `tcp-connect <device> <ip> <port> [text...]` (client; sends text after the
+  handshake and prints `tcp reply from <ip>:<port> "<text>"`).
+- Outgoing segments go through the normal IPv4 path: routing, next-hop ARP with
+  pending queue, then Ethernet. Works over a single link and through routers.
+- Connection setup uses per-host ephemeral ports (`nextTcpLocalPort`, starting at
+  40000); server connections bind the listening port and learn the peer from SYN.
+- Tests: three new scenarios — `tcp.txt` (direct link), `tcp_router.txt` (host →
+  router → host), `tcp_loss.txt` (30% loss drives retransmission). All 28 `.txt`
+  scenarios, 3 Lua scenarios, 12 CLI checks, and 9 examples pass; 175 unit checks.
+- `tcp-lite-*` remains available (and deprecated) as a teaching/contrast transport.
+- Next: TCP refinements (MSS/WS/SACK, zero-window probes, keepalive), then
+  DHCP/DNS, NAT, dynamic routing, IPv6, full RSTP, scale/engineering.
+
+## Phase 47 — DHCP and DNS (2026-11-23)
+
+- Added `core/DhcpMessage` (BOOTP/DHCP subset): fixed header, magic cookie, and
+  options 53/54/50/51/1/3/6 with strict bounds checking.
+- Added `core/DnsMessage`: header, uncompressed name encoding, compression-pointer
+  decoding, A questions/answers, and NXDOMAIN support.
+- `EndDevice` now runs a DHCP server (pool scan, per-MAC lease reuse, broadcast
+  OFFER/ACK, DNS option) and a DHCP client (DISCOVER/OFFER/REQUEST/ACK, then
+  applies IP/prefix, gateway and DNS). UDP is intercepted for ports 67/68 before
+  the destination-IP check so a host without an address can bootstrap.
+- DNS: `dns-server` enables A-record answers from a case-insensitive table;
+  `dns-query` resolves via an explicit server or the DHCP-provided DNS server.
+- Commands: `dhcp-server`, `dhcp-client`, `dns-server`, `dns-record`, `dns-query`
+  (help, usage and Tab completion updated).
+- Tests: new scenarios `dhcp.txt`, `dhcp_dns.txt`, `dns.txt`, `dns_nx.txt`
+  (32 `.txt` total); DHCP/DNS codec unit tests raise the unit count to **206**.
+- Next: NAT, dynamic routing (RIP/OSPF-lite), IPv6, full RSTP, scale/engineering.
+
+## Phase 48 — Router NAT (2026-11-23)
+
+- Added source NAT/PAT to `Router`: an inside/outside port pair; outbound TCP,
+  UDP and ICMP echo traffic is rewritten to the outside address with a unique
+  translated port/id, and return traffic is translated back.
+- TCP payloads are decoded and re-encoded so the pseudo-header checksum stays
+  valid after address/port edits; UDP uses its zero-checksum encoding; ICMP echo
+  ids are remapped and restored.
+- Inbound port forwarding (`nat-port`) performs DNAT to an inside host and
+  creates the reverse mapping, so the outside client sees replies from the
+  public address/port. Translation table is capped (`kMaxNat`).
+- Commands: `nat <router> on <inside-dev:idx> <outside-dev:idx> | off`,
+  `nat-port <router> tcp|udp <public-port> <inside-ip> <inside-port>`, and
+  `nat-table <router>` (mappings and forwards); help/completion updated.
+- Tests: `nat_tcp`, `nat_udp`, `nat_ping`, `nat_forward`, `nat_table` scenarios
+  (37 `.txt` total); coverage 55.6%. Example `11_nat.txt`.
+- Next: dynamic routing (RIP/OSPF-lite), IPv6, full RSTP, scale/engineering.
+
+## Phase 49 — RIP v2-lite dynamic routing (2026-11-23)
+
+- Added `core/RipMessage` (command/version header plus 20-byte IPv4/mask/metric
+  entries) with strict size and version validation; metrics beyond 16 clamp to
+  infinity.
+- `Router` runs RIP on UDP 520 over link-local Ethernet/IP broadcast (TTL 1),
+  intercepted before normal forwarding so broadcasts never transit the router.
+  Updates are sent every 30 time units and immediately when RIP is enabled.
+- Learned routes are stored in the route table with `metric`, `dynamic`,
+  `learnedFromPort` and `expiresAt`; split horizon skips routes on the source
+  port, and dynamic routes expire after 180 units.
+- Route selection now breaks equal-prefix ties by metric, so connected/static
+  routes (metric 0) win over learned ones.
+- Commands: `rip <router> on|off` and `rip-status <router>` (connected, static
+  and learned routes with next hop and metric); help/completion updated.
+- Tests: `rip.txt` (ping across two routers after convergence) and
+  `rip_status.txt` (learned 192.168.2.0/24 via 10.0.0.2 metric 2); RIP codec
+  unit tests bring the unit count to **218**; 39 scenarios. Coverage 55.3%.
+  Example `12_rip.txt`.
+- Next: OSPF-lite, IPv6, full RSTP, scale/engineering.
+
+## Phase 50 — Real OSPFv2 single-area core (2026-11-23)
+
+- Removed the experimental "OSPF-lite" implementation (UDP 89 hop flooding) and
+  its commands/tests; it was not RFC 2328 and is no longer exposed as OSPF.
+- Added `core/OspfPacket`: RFC 2328 packet header (version/type/length, router
+  and area IDs, checksum, authentication), Hello, Database Description, Link
+  State Request/Update/Ack, Router-LSA and Network-LSA codecs, packet checksum
+  and Fletcher LSA checksum, with strict length/field validation.
+- Tests: 31 new checks (266 unit checks total) covering all packet types, LSA
+  round-trips, checksum failure detection, malformed lengths and simple-password
+  authentication fields.
+- Next: per-interface state, Hello timers, neighbor FSM, DR/BDR election, LSDB
+  aging/sequence, DD/LSR/LSU exchange, SPF, and the `ospf`/`ospf-status` CLI.
+- Step 2: real adjacency path implemented: IP protocol 89 with AllSPFRouters
+  multicast (224.0.0.5 / 01:00:5e:00:00:05), Hello timers 10/40, neighbor
+  Init/2-Way states, dead-neighbor expiry, and DR/BDR election with a Wait
+  timer. `ospf`/`ospf-status` now expose interfaces, DR/BDR and neighbors.
+- Tests: `ospf_hello` and `ospf_dr` scenarios confirm 2-Way adjacency and
+  BDR/DR assignment; unit count remains 266.
+- Step 3: DD/LSR/LSU/LSAck exchange, Router-LSA and Network-LSA origination and
+  flooding, LSDB keyed by (type, LS ID, advertising router), and Dijkstra SPF
+  with next-hop resolution and route installation. DD uses a compact two-phase
+  exchange; LSA sequence numbers only advance on topology change.
+- Tests: `ospf` (three-router chain ping), `ospf_full`, `ospf_status`
+  (`192.168.3.0/24 via 10.0.0.2 metric 3`) plus `ospf_hello`/`ospf_dr`.
+- Added LSDB aging: ages advance every Hello tick, self-originated LSAs refresh
+  at 1800s, other LSAs are removed at MaxAge, and same-sequence lower-age LSAs
+  refresh peers. Added `ospf-auth <router> none|simple <password>` and an
+  auth scenario.
+- Windows-first verification: added `tests/run_tests.ps1`, made pcap/save
+  scenarios use relative paths, and ran every scenario, Lua test, and example
+  against `netsim.exe` in PowerShell (all pass).
+- Remaining before calling OSPF complete: multi-area/ABR, LSA types 3-5, MD5
+  authentication, and DD/LSU retransmission.
+- Next: those OSPF gaps, then IPv6 and full RSTP.
+
+## Phase 51 — Centralized build artifacts (2026-11-23)
+
+- POSIX build now writes all objects and dependency files under
+  `build/obj/<layer>/` instead of next to sources; Lua objects/archive remain
+  under `build/lua/` and `build/liblua.a`.
+- `make clean` removes `build/` and also sweeps any legacy `*.o`/`*.d` left in
+  source or `third_party/` directories.
+- `Makefile.win` now writes Lua objects to `build/win/lua/` and the resource to
+  `build/win/yanas_res.o`; `clean` removes those and any legacy copies.
+- `tests/coverage.sh` links and runs gcov against `build/obj/*`, and builds with
+  `-j` (default 4) so coverage builds finish reliably on `/mnt/c`.
+- Verified: POSIX and MinGW builds leave no `.o`/`.d` outside `build/`;
+  coverage passes at 54.9% (threshold 54%); unit and scenario suites pass.
+
+## Phase 52 — TCP/OSPF hardening and Go stress tooling (2026-11-23)
+
+- TCP: SYN/SYN-ACK now carry MSS and window-scale options; MSS is negotiated
+  (clamped 536..1460) and send/receive windows are scaled after the handshake.
+- TCP reliability: SRTT/RTTVAR RTO estimation (clamped 20..500, Karn rule),
+  retransmission of the oldest unacked segment instead of only the last one,
+  RST abort handling, partial-ACK trimming, and basic zero-window probes.
+- TCP SACK: SACK-permitted in SYN, receiver SACK blocks (up to 3 coalesced
+  ranges) on out-of-order/duplicate ACKs, and sender selection of the first
+  unsacked hole at the third duplicate ACK.
+- OSPF: added per-neighbor LSA retransmission queues cleared by LSAck, DD/LSR
+  retransmission timers, and Full-state DD recovery so a lost final DD no longer
+  deadlocks the exchange. New `ospf_loss` scenario converges under 30% loss.
+- Tooling: added `tools/ynstress` (Go) to run all scenarios in parallel and
+  repeat them, checking `.want` output and timing. Go is used only for tooling;
+  the simulator hot path stays C++17.
+- Tests: 283 unit checks (TCP MSS/WS/SACK/reliability assertions), 47 scenarios
+  including `ospf_loss`; PowerShell runner and Go stress run (`-repeat 3`) pass.
+- Scope discipline: no speculative configuration or proto-feature is added;
+  every change must alter observable behaviour and come with a unit or scenario
+  test. Go stays in tooling; the deterministic hot path remains C++17.
+
 ---
 
 ## Validation approach (2026-11-20)

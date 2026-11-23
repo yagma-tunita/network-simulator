@@ -1,30 +1,38 @@
 CXX ?= g++
 CC := gcc
+GO ?= go
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -O2 -I.
 CXXFLAGS += -DHAVE_LUA -Ithird_party/lua
 
-LIB_SRCS := $(wildcard core/*.cpp) $(wildcard device/*.cpp) $(wildcard link/*.cpp) $(wildcard engine/*.cpp) $(wildcard topo/*.cpp)
-CLI_SRCS := app/main.cpp script/LuaScript.cpp
+LIB_SRCS := $(wildcard core/*.cpp) $(wildcard device/*.cpp) $(wildcard link/*.cpp) $(wildcard engine/*.cpp) $(wildcard topo/*.cpp) $(wildcard netstack/*.cpp)
+CLI_SRCS := app/main.cpp app/LineEditor.cpp script/LuaScript.cpp
 LUA_SRCS := $(wildcard third_party/lua/*.c)
-LUA_OBJS := $(LUA_SRCS:.c=.o)
-RES := win/yanas_res.o
+LUA_OBJS := $(patsubst third_party/lua/%.c,build/win/lua/%.o,$(LUA_SRCS))
+RES := build/win/yanas_res.o
 CLI := netsim.exe
 
-.PHONY: all clean cli
+.PHONY: all clean cli tools
 
 all: $(CLI)
 cli: $(CLI)
 
 $(RES): win/yanas.rc win/yanas.manifest win/yanas.ico
+	@if not exist build\win mkdir build\win
 	windres win/yanas.rc -O coff -o $(RES)
 
 $(CLI): $(LIB_SRCS) $(CLI_SRCS) $(LUA_OBJS) $(RES)
 	$(CXX) $(CXXFLAGS) $(LIB_SRCS) $(CLI_SRCS) $(LUA_OBJS) $(RES) -o $(CLI) -lm
 
-third_party/lua/%.o: third_party/lua/%.c
+build/win/lua/%.o: third_party/lua/%.c
+	@if not exist build\win\lua mkdir build\win\lua
 	$(CC) -O2 -Ithird_party/lua -c $< -o $@
 
 clean:
 	if exist $(CLI) del /Q $(CLI)
-	if exist $(RES) del /Q $(RES)
+	if exist build\win rmdir /S /Q build\win
 	if exist third_party\lua\*.o del /Q third_party\lua\*.o
+	if exist win\yanas_res.o del /Q win\yanas_res.o
+
+tools:
+	@if not exist build mkdir build
+	cd tools\ynstress && $(GO) build -o ..\..\build\ynstress.exe .

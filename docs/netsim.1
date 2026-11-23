@@ -1,4 +1,4 @@
-.TH YANASNET 1 "2026-11-22" "yanas net 0.1.0" "User Commands"
+.TH YANASNET 1 "2026-11-23" "yanas net 0.1.0" "User Commands"
 .SH NAME
 yanas net \- deterministic Layer-2/Layer-3 network simulator
 .SH SYNOPSIS
@@ -9,7 +9,22 @@ yanas net \- deterministic Layer-2/Layer-3 network simulator
 simulates IPv4/Ethernet networks (ARP, VLAN/802.1Q, MAC-learning switches,
 spanning tree, static routing, ICMP) on a deterministic logical clock.
 It runs an interactive command prompt, line-command scripts, Lua scripts, or
-loads \fB.yn\fR scene files. Press Ctrl-C to interrupt a running simulation.
+loads \fB.yn\fR scene files. The prompt supports history, Tab completion, and
+Emacs-style line editing. Press Ctrl-C to interrupt a running simulation.
+Diagnostics include \fBdevices\fR, \fBlinks\fR, \fBports\fR, \fBroutes\fR,
+\fBarp-table\fR, \fBmac-table\fR, \fBtraceroute\fR, and \fBexport dot|svg\fR.
+UDP echo (\fBudp-echo\fR/\fBudp-send\fR), a real TCP service and client
+(\fBtcp-listen\fR/\fBtcp-connect\fR) with MSS/window-scale negotiation, SACK,
+RTT-based retransmission and zero-window probing; the deprecated
+\fBtcp-lite-*\fR teaching transport (not TCP); a DHCP server/client
+(\fBdhcp-server\fR/\fBdhcp-client\fR); a DNS server and resolver
+(\fBdns-server\fR/\fBdns-record\fR/\fBdns-query\fR); source NAT/PAT and port
+forwarding (\fBnat\fR/\fBnat-port\fR/\fBnat-table\fR); RIP v2-lite dynamic
+routing (\fBrip\fR/\fBrip-status\fR); and an OSPFv2 single-area core with
+LSDB/SPF and simple-password authentication
+(\fBospf\fR/\fBospf-status\fR/\fBospf-auth\fR). Router
+\fBacl\fR rules, \fBset-link ... loss|dup|jitter|clear\fR impairment, an ASCII
+\fBmap\fR, \fBhelp <command>\fR, and \fBgenerate tree\fR are also available.
 .SH OPTIONS
 .TP
 .B \-h, \-\-help
@@ -33,6 +48,12 @@ Refuse to execute \fB.lua\fR scripts (defense in depth beyond the default sandbo
 .B \-i, \-\-interactive
 Enter the interactive prompt after loading a file.
 .TP
+.B \-\-json
+Emit NDJSON records (requires a file).
+.TP
+.B \-\-log \fIfile\fR
+Also append JSON records to a file.
+.TP
 .B \-f, \-\-file \fIpath\fR
 Run a scene or script file.
 .SH FILES
@@ -46,6 +67,10 @@ Line-command script.
 .TP
 .I *.lua
 Lua scenario script (sandboxed by default; see SECURITY).
+.SH LIMITS
+Devices 4096; ports 65536 (1024 per device); links 65536; event queue 5,000,000;
+pcap 2,000,000 frames / 256 MiB; scripts 16 MiB / 1,000,000 lines; scenes
+100,000 commands; Lua 4 MiB / 50M instructions.
 .SH SECURITY
 Lua scripts run in a restricted sandbox: only the base library (without
 \fBdofile\fR, \fBload\fR, \fBloadfile\fR, \fBrequire\fR) plus \fBstring\fR,
@@ -62,6 +87,9 @@ netsim tests/config.yn
 netsim -i tests/config.yn
 netsim tests/auto_ping.txt
 netsim tests/lua_ping.lua
+netsim examples/13_ospf.txt
 .fi
+.SH LICENSE
+GNU General Public License v3.0 or later. See LICENSE and COPYRIGHT.
 .SH SEE ALSO
 The project README and DEVELOPMENT_LOG.md.

@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <cstddef>
 
 #include "../core/Ipv4.hpp"
 #include "../core/Ipv4Subnet.hpp"
@@ -20,6 +21,11 @@ struct Router;
 
 struct Topology
 {
+    static constexpr std::size_t kMaxDevices = 4096;
+    static constexpr std::size_t kMaxPorts = 65536;
+    static constexpr std::size_t kMaxLinks = 65536;
+    static constexpr std::size_t kMaxPortsPerDevice = 1024;
+
     Engine *engine = nullptr;
     std::map<std::string, std::unique_ptr<Device>> devices;
     std::vector<std::unique_ptr<Port>> ports;

@@ -1,6 +1,6 @@
 # yanas net
 
-<img src="web/logo.svg" alt="yanas net" width="72" align="left">
+<img src="docs/logo.svg" alt="yanas net" width="72" align="left">
 
 **yanas net** is a deterministic C++17 network simulator for Layer-2/Layer-3
 study and scenarios: IPv4 subnets, Ethernet frames, ARP, VLAN/802.1Q, MAC-learning
@@ -8,6 +8,7 @@ switches, spanning tree (STP and an RSTP-style rapid mode), static routing, and
 ICMP. It is a **terminal-first, scriptable tool for technical users**: an
 interactive CLI plus `.txt`/`.lua`/`.yn` inputs and bundled Lua, all on a
 deterministic engine. (Former GUI and web front ends are archived under `legacy/`.)
+It is free software under the GNU GPL v3.0 or later.
 
 The engine runs on a logical clock, wire formats are byte-accurate, and the
 sources are dependency-free and comment-free (all documentation is here and in
@@ -80,6 +81,30 @@ comment-free; all documentation lives in this README and `DEVELOPMENT_LOG.md`.
 - Lua scenario scripting (real Lua 5.4; `exec` / `run` / `log`).
 - Editing/automation: `remove-device`/`remove-port`/`disconnect`/`rename-device`/
   `set-ip`, `state` JSON snapshots, and Ctrl-C to interrupt a long run.
+- Diagnostics and visualization: `devices`/`links`/`ports`/`routes`/`arp-table`/
+  `mac-table`, `traceroute`, and `export dot|svg` (diagram without a GUI).
+- UDP datagrams with a configurable per-host echo service (`udp-echo`/`udp-send`).
+- Real TCP service and client (`tcp-listen`/`tcp-connect`): three-way handshake,
+  sequence/ACK, out-of-order reassembly, RTT-based RTO with oldest-unacked
+  retransmission, RST, basic zero-window probing, FIN/TIME_WAIT,
+  slow-start/congestion-avoidance, MSS negotiation, window scaling and SACK.
+  `tcp-lite-*` remains as a deprecated teaching transport and is **not** TCP.
+- DHCP server/client (`dhcp-server`/`dhcp-client`) with a configurable address
+  pool, gateway and DNS option; DNS server/client (`dns-server`/`dns-record`/
+  `dns-query`) over UDP. DHCP automatically configures the DNS server for hosts.
+- Source NAT/PAT and inbound port forwarding on routers (`nat`, `nat-port`,
+  `nat-table`): rewrites TCP/UDP/ICMP, recomputes TCP checksums, and supports
+  address overloading plus DNAT to inside hosts.
+- RIP v2-lite dynamic routing (`rip`, `rip-status`): periodic updates over UDP
+  520, split horizon, infinity metric, learned-route timers, and longest-prefix/
+  metric route selection.
+- OSPFv2 single-area core (`ospf`, `ospf-status`): RFC 2328 packets, Hello /
+  neighbor state machine, DR/BDR election, LSDB aging/refresh with DD/LSR/LSU/
+  LSAck exchange and retransmission, Dijkstra SPF routes, and simple-password
+  authentication (`ospf-auth`).
+- Link impairment (`set-link ... loss/dup/jitter/clear`) for reliability testing.
+- Per-router ACLs (in/out, allow/deny by source/destination prefix and protocol).
+- Terminal topology `map` and a tree generator (`generate tree`) for scale tests.
 
 ## Architecture
 
@@ -150,7 +175,11 @@ Internet/
 │   ├── Mac.hpp / .cpp
 │   ├── EthernetFrame.hpp / .cpp
 │   ├── ARP.hpp / .cpp
-│   └── IpPacket.hpp / .cpp
+│   ├── IpPacket.hpp / .cpp
+│   ├── UdpDatagram.hpp / .cpp
+│   ├── TcpSegment.hpp / .cpp
+│   ├── DhcpMessage.hpp / .cpp
+│   └── DnsMessage.hpp / .cpp
 ├── device/                  # networked devices and interfaces
 │   ├── Device.hpp / .cpp    # abstract base
 │   ├── ArpAgent.hpp / .cpp  # shared ARP cache + request/reply
@@ -172,6 +201,8 @@ Internet/
 │   ├── Topology.hpp / .cpp  # model + builder (owns devices/ports/links)
 │   ├── TopoCommand.hpp / .cpp   # command parser/interpreter
 │   └── CommandRunner.hpp / .cpp # shared line runner (CLI + Lua)
+├── netstack/                # real TCP stack (state machine, reliability)
+│   └── TcpConnection.hpp / .cpp
 ├── script/                  # bundled Lua bridge (static)
 │   └── LuaScript.hpp / .cpp # exposes exec/run/log to Lua 5.4
 ├── tests/                   # unit, fuzz, and scenario tests
@@ -179,11 +210,20 @@ Internet/
 │   ├── fuzz_parsers.cpp     # deterministic parser fuzzing
 │   ├── run_tests.sh         # scenario runner
 │   └── *.txt / *.want
+├── examples/                # runnable example scenes and scripts
+├── docs/                    # man page + user guide
 ├── legacy/                  # archived GUI/web front ends (not built)
 ├── Makefile                 # build system (make -> netsim)
+├── Makefile.win             # Windows CLI build (MinGW)
 ├── CMakeLists.txt           # alternative CMake build
-├── .github/workflows/ci.yml # CI (gcc/clang matrix, make test)
+├── .github/workflows/ci.yml # CI (gcc/clang + check + macOS + Windows)
 ├── .clang-tidy              # static-analysis config
+├── COPYRIGHT                # GPLv3 copyright notice
+├── LICENSE                  # GNU General Public License v3.0
+├── SOURCE-CODE.md           # GPL source-availability statement
+├── THIRD_PARTY_NOTICES.md   # Lua (MIT) notice
+├── CONTRIBUTING.md
+├── SECURITY.md
 ├── .gitignore
 ├── README.md
 └── DEVELOPMENT_LOG.md
@@ -537,6 +577,9 @@ make test       # -Werror + ASan/UBSan unit + fuzz + scenario suite
 make san        # unit + fuzz only, with leak detection
 ```
 
+`make check` also runs a coverage gate, a bounded-memory soak, and a throughput
+floor. Set `WERROR=0` to build without `-Werror`.
+
 Lua 5.4 is bundled under `third_party/lua/` and linked statically into `netsim`
 (and the Windows CLI) — no external Lua installation is required. Only a safe
 subset is compiled (no `os`, `io`, `package`, or `debug`). See
@@ -573,6 +616,10 @@ g++ -std=c++17 -Wall -Wextra -Werror core/*.cpp device/*.cpp link/*.cpp \
 
 Headers use relative includes (`"../core/..."`), so no `-I` flags are needed.
 
+All build products are written under `build/`: object and dependency files in
+`build/obj/<layer>/`, the Lua archive in `build/lua/`, and sanitizer/coverage
+binaries in `build/`. Source directories are never used as object output.
+
 ## Packaging and signing
 
 ```sh
@@ -597,7 +644,7 @@ powershell -File packaging\build-win.ps1   # Windows CLI + portable ZIP
 ```
 
 Options: `-h/--help`, `--version`, `--features`, `-q/--quiet`,
-`--keep-going`, `--no-lua`, `-i/--interactive`,
+`--keep-going`, `--no-lua`, `-i/--interactive`, `--json`, `--log <file>`,
 `-f/--file <path>`. Files are chosen by extension: `.yn`/`.json` scene,
 `.lua` script, otherwise a `.txt` line-command script.
 
@@ -612,6 +659,19 @@ so a first run shows a result immediately. On Windows the same CLI is
 `netsim.exe`. Editing commands (`remove-device`, `remove-port`, `disconnect`,
 `rename-device`, `set-ip`) and `state` (a JSON snapshot) support automation;
 Ctrl-C interrupts a running `run`.
+
+Interactive use adds history (`↑`/`↓`), Tab completion (commands and device
+names), Home/End, and Ctrl-A/E/U/K, saved to `~/.yanas_history` (Windows uses
+plain line input). `--json` emits NDJSON (one record per command plus a final
+`summary` carrying the `state`); `--log <file>` also appends those records. Both
+require a file argument.
+
+### Limits
+
+Hard caps protect against runaway input: 4096 devices; 65536 ports (1024 per
+device); 65536 links; a 5,000,000-event queue (the run halts); pcap 2,000,000
+frames / 256 MiB; scripts 16 MiB / 1,000,000 lines; scenes 100,000 commands; Lua
+4 MiB / 50M instructions.
 
 Each line is one command (`#` starts a comment):
 
@@ -628,6 +688,35 @@ set-bridge <switch> <priority>                 # bridge priority (default 32768)
 stp-status <switch>                            # print root + per-port state
 set-link   <dev:idx> down|up                   # bring a link down/up (STP reconverge)
 stats      <device>                            # per-port rx/tx/drop counters
+devices | links                                # list devices / links
+ports      <device>                            # port table (MAC/IP/VLAN/STP/counters)
+routes     <router>                            # routing table
+arp-table  <device>                            # ARP cache
+mac-table  <switch>                            # MAC table
+traceroute <device> <target-ip> [max-hops]     # ICMP traceroute
+export     dot|svg <file>                      # export topology diagram
+udp-echo   <device> on|off [port]              # UDP echo service
+udp-send   <device> <ip> <dport> <text...>     # send a UDP datagram
+tcp-listen <device> on|off [port]              # real TCP echo service
+tcp-connect <device> <ip> <port> [text...]     # real TCP client
+dhcp-server <device> on <start> <end> <prefix> <gateway> [dns] | off
+dhcp-client <device> [port-index]              # acquire a lease
+dns-server  <device> on|off                    # DNS A-record server
+dns-record  <device> <name> <ip>               # add a static record
+dns-query   <device> [server-ip] <name>        # resolve a name
+nat        <router> on <inside-dev:idx> <outside-dev:idx> | off
+nat-port   <router> tcp|udp <public-port> <inside-ip> <inside-port>
+nat-table  <router>
+rip        <router> on|off                     # RIP v2-lite dynamic routing
+rip-status <router>                            # routes with metric/next hop
+ospf       <router> on|off                     # OSPFv2 single-area core
+ospf-status <router>                           # interfaces, neighbors, LSDB, routes
+ospf-auth  <router> none|simple <password>     # simple-password authentication
+tcp-lite-echo   <device> on|off [port]          # deprecated (NOT TCP)
+tcp-lite-echo-client <device> <ip> <port> <text...>
+acl        <router> in|out allow|deny <src/p> <dst/p> <proto|any>
+map                                            # ASCII topology map
+generate   tree <depth> <fanout>               # build a large tree topology
 remove-device <name>                           # delete a device (and its links)
 remove-port   <dev:idx>                        # delete a port (and its link)
 disconnect    <dev:idx>                        # remove the link on a port
@@ -712,21 +801,44 @@ Three layers of tests, all runnable with `make test`:
 
 - `tests/unit/unit_tests.cpp` — unit tests for the codecs and addressing
   (`Ipv4`, `Ipv4Subnet`, `Mac`, `ARP`, `IpPacket`, `IcmpMessage`,
-  `EthernetFrame` incl. 802.1Q), built with `-Werror` + ASan/UBSan.
+  `EthernetFrame` incl. 802.1Q), TCP option/reliability behaviour and OSPF
+  packet/LSA checksums (283 checks), built with `-Werror` + ASan/UBSan.
 - `tests/fuzz_parsers.cpp` — deterministic fuzzing of every byte parser; must
   stay ASan/UBSan-clean.
 - `tests/*.txt` scenarios — each `NAME.txt` is a scene and `NAME.want` a substring
   the output must contain (the runner also fails on `fatal:` and applies a
   timeout). Scenarios cover ARP, auto-ARP ping, ping timeout/RTT, TTL exceeded,
   ICMP unreachable, cross-subnet routing, VLAN isolation, 802.1Q trunking, STP
-  loop prevention / reconvergence after a link flap, port counters, JSON
-  save/load, pcap capture, and RSTP mode.
+  loop prevention / reconvergence, port counters, JSON save/load, pcap capture,
+  RSTP, TCP (direct/router/loss), DHCP/DNS, NAT, RIP, and OSPF
+  (adjacency/Full/loss/authentication).
 - `tests/lua_ping.lua` — a Lua scenario (loop + `exec` + `run`) when Lua is built.
 
 ```sh
 make test                 # unit + fuzz (ASan/UBSan) + every scenario
 bash tests/run_tests.sh   # scenarios only
 ```
+
+On Windows, build with MinGW and run the PowerShell test runner:
+
+```powershell
+mingw32-make -f Makefile.win
+powershell -ExecutionPolicy Bypass -File tests\run_tests.ps1
+```
+
+The PowerShell runner executes every `tests\*.txt` against its `.want`, the Lua
+scenarios when Lua is present, and all examples.
+
+An optional Go stress runner repeats scenarios in parallel (Go is tooling only;
+the simulator hot path remains C++):
+
+```powershell
+mingw32-make -f Makefile.win tools
+.\build\ynstress.exe -exe .\netsim.exe -repeat 2 -jobs 4
+```
+
+`make check` adds a coverage gate (about 58% now, floor 54%), a bounded-memory soak
+(256 MiB address-space cap with STP reconvergence), and a throughput floor.
 
 ## Quick start
 
@@ -766,6 +878,14 @@ Compile (assuming the snippet is `app/main.cpp`):
 g++ -std=c++17 -Wall -Wextra -Icore -Idevice -Iengine \
     core/*.cpp device/*.cpp app/main.cpp -o netsim
 ```
+
+## Examples and user guide
+
+- `examples/` — runnable scenes and scripts (`01_two_hosts.txt`, `03_router.txt`,
+  `04_stp.txt`, `05_lua.lua`, `06_scene.yn`, ...).
+- `docs/USER_GUIDE.md` — a student-oriented walkthrough.
+- `CONTRIBUTING.md` and `SECURITY.md` — how to build/contribute and the sandbox.
+- License: GNU GPL v3.0 or later (`LICENSE`, `COPYRIGHT`, `SOURCE-CODE.md`).
 
 ## Behavior details
 
@@ -906,16 +1026,38 @@ Implemented:
 - [x] Windows CLI (`netsim.exe`) with bundled Lua, icon and version resource
 - [x] Editing: `remove-device` / `remove-port` / `disconnect` / `rename-device` / `set-ip`
 - [x] `state` JSON snapshot; Ctrl-C interrupts a running `run`
+- [x] Diagnostics (`devices`/`links`/`ports`/`routes`/`arp-table`/`mac-table`),
+      `traceroute`, and topology `export dot|svg`
+- [x] UDP datagrams + host echo service; `map` and `generate tree` for scale
+- [x] Experimental `tcp-lite` (NOT TCP); ACLs; `help <command>`; link impairment;
+      TCP checksum/options groundwork
+- [x] Real TCP stack exposed: handshake, data, RTO retransmission, FIN/TIME_WAIT,
+      congestion control; `tcp-listen`/`tcp-connect`; loss-driven retransmission tests
+- [x] DHCP client/server and DNS server/records/query over UDP
+- [x] Source NAT/PAT and port forwarding (DNAT) on routers
+- [x] RIP v2-lite dynamic routing (broadcast updates, split horizon, timers)
+- [x] OSPFv2 single-area core: RFC packets, DR/BDR, LSDB exchange/aging, SPF,
+      simple-password authentication
+- [x] Hard resource caps (topology, event queue, pcap, scripts, scenes)
+- [x] Interactive line editing, history, and Tab completion
+- [x] `--json` NDJSON + `--log` structured output
+- [x] `make check`: coverage gate, bounded soak, throughput floor; CI check/macOS jobs
 - [x] Packaging: portable CLI ZIP (`packaging/build-win.ps1`) + `signtool` script;
       Windows CI job building `netsim.exe`
 - [x] Scene workflow: `save`/`load` `.yn`, `new` reset
 - [x] Productized CLI: `--help/--version/--features`, stable exit codes,
       `file:line` script errors, `--quiet`, `--keep-going`, `-i`, `--no-lua`,
       direct `.yn` loading, `demo`/`new`, man page (`docs/netsim.1`)
-- [x] `VERSION`, `CHANGELOG.md`, proprietary `LICENSE`, `make dist` packaging
+- [x] Open source under GNU GPLv3 (`LICENSE`, `COPYRIGHT`, `SOURCE-CODE.md`)
+- [x] Examples, student user guide, CONTRIBUTING, and SECURITY docs
+- [x] `VERSION`, `CHANGELOG.md`, `make dist` / `make install` packaging
 
 Planned:
 
+- [ ] TCP refinements: keepalive, simultaneous open/close, full persist tuning.
+- [ ] OSPF multi-area/ABR, LSA types 3-5, MD5 authentication, IPv6, full RSTP.
+- [ ] Scale/engineering: `--jobs` parallel scenarios, `src/` restructure, CMake
+      presets, three-platform CI.
 - [ ] Full IEEE 802.1w proposal/agreement (current RSTP mode is a rapid subset)
 - [ ] clang-tidy enforcement (advisory CI job present; needs tuning / compile DB)
 - [ ] Observability: drop-reason breakdown (counters done)
@@ -924,6 +1066,11 @@ Planned:
 
 ---
 
-Copyright (c) 2026 yanas. All rights reserved. This is proprietary software; see
-`LICENSE`. The bundled Lua runtime is used under its MIT license when Lua support
-is built.
+## License
+
+yanas net is free software under the **GNU General Public License v3.0 or later**
+(see `LICENSE` and `COPYRIGHT`). Because binaries are distributed under the GPL,
+the corresponding source is provided in `yanas-net-<version>.tar.gz` and in the
+source archive shipped inside the Windows ZIP (see `SOURCE-CODE.md`). The bundled
+Lua 5.4.6 is MIT-licensed and GPL-compatible; its notice is in
+`THIRD_PARTY_NOTICES.md`.
