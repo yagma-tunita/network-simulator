@@ -1,5 +1,7 @@
 #include "OspfPacket.hpp"
 #include "ByteIO.hpp"
+#include "Md5.hpp"
+#include "Sha.hpp"
 #include <cstddef>
 #include <algorithm>
 
@@ -7,6 +9,86 @@ using namespace ByteIO;
 
 namespace
 {
+    std::size_t CryptoDigestLen(uint8_t alg)
+    {
+        if(alg == 1) return 20;
+        if(alg == 2) return 32;
+        return 16;
+    }
+
+    std::vector<uint8_t> CryptoDigest(const std::vector<uint8_t> &packet,
+                                      const std::string &key, uint8_t alg)
+    {
+        if(alg == 0)
+        {
+            std::vector<uint8_t> input = packet;
+            for(char c : key)
+                input.push_back(uint8_t(c));
+            std::array<uint8_t, 16> d = Md5(input);
+            return std::vector<uint8_t>(d.begin(), d.end());
+        }
+
+        std::size_t L = CryptoDigestLen(alg);
+        std::vector<uint8_t> ko;
+        if(key.size() > L)
+        {
+            std::vector<uint8_t> k(key.begin(), key.end());
+            if(alg == 1)
+            {
+                std::array<uint8_t, 20> h = Sha1(k);
+                ko.assign(h.begin(), h.end());
+            }
+            else
+            {
+                std::array<uint8_t, 32> h = Sha256(k);
+                ko.assign(h.begin(), h.end());
+            }
+        }
+        else
+        {
+            ko.assign(key.begin(), key.end());
+            ko.resize(L, 0);
+        }
+
+        std::vector<uint8_t> input = packet;
+        static const uint8_t apadBytes[4] = { 0x87, 0x8f, 0xe1, 0xf3 };
+        for(std::size_t i = 0; i < L; ++i)
+            input.push_back(apadBytes[i % 4]);
+
+        std::vector<uint8_t> ipad(64, 0x36);
+        std::vector<uint8_t> opad(64, 0x5c);
+        for(std::size_t i = 0; i < L; ++i)
+        {
+            ipad[i] ^= ko[i];
+            opad[i] ^= ko[i];
+        }
+
+        std::vector<uint8_t> inner = ipad;
+        inner.insert(inner.end(), input.begin(), input.end());
+
+        std::vector<uint8_t> hash;
+        if(alg == 1)
+        {
+            std::array<uint8_t, 20> h = Sha1(inner);
+            hash.assign(h.begin(), h.end());
+        }
+        else
+        {
+            std::array<uint8_t, 32> h = Sha256(inner);
+            hash.assign(h.begin(), h.end());
+        }
+
+        std::vector<uint8_t> outer = opad;
+        outer.insert(outer.end(), hash.begin(), hash.end());
+        if(alg == 1)
+        {
+            std::array<uint8_t, 20> h = Sha1(outer);
+            return std::vector<uint8_t>(h.begin(), h.end());
+        }
+        std::array<uint8_t, 32> h = Sha256(outer);
+        return std::vector<uint8_t>(h.begin(), h.end());
+    }
+
     void AppendLsaHeader(std::vector<uint8_t> &buf, const OspfLsaHeader &h)
     {
         AppendU16(buf, h.age);
@@ -106,6 +188,27 @@ std::vector<uint8_t> OspfPacket::EncodeLsa(const OspfLsa &lsa)
         for(const Ipv4 &r : lsa.attached)
             AppendIpv4(body, r);
     }
+    else if(lsa.header.type == SummaryLsa)
+    {
+        AppendIpv4(body, lsa.mask);
+        AppendU32(body, lsa.metric & 0x00FFFFFFu);
+    }
+    else if(lsa.header.type == SummaryAsbrLsa)
+    {
+        AppendU32(body, lsa.metric & 0x00FFFFFFu);
+    }
+    else if(lsa.header.type == ExternalLsa)
+    {
+        AppendIpv4(body, lsa.mask);
+        AppendIpv4(body, lsa.forwarding);
+        AppendU32(body, lsa.metric);
+    }
+    else if(lsa.header.type == NssaExternalLsa)
+    {
+        AppendIpv4(body, lsa.mask);
+        AppendIpv4(body, lsa.forwarding);
+        AppendU32(body, lsa.metric);
+    }
 
     OspfLsaHeader h = lsa.header;
     h.length = uint16_t(20 + body.size());
@@ -168,6 +271,35 @@ bool OspfPacket::DecodeLsa(const std::vector<uint8_t> &buf, std::size_t &off,
         out.mask = ReadIpv4(bytes, 20);
         for(std::size_t p = 24; p < h.length; p += 4)
             out.attached.push_back(ReadIpv4(bytes, p));
+    }
+    else if(h.type == SummaryLsa)
+    {
+        if(h.length < 28)
+            return false;
+        out.mask = ReadIpv4(bytes, 20);
+        out.metric = ReadU32(bytes, 24) & 0x00FFFFFFu;
+    }
+    else if(h.type == SummaryAsbrLsa)
+    {
+        if(h.length < 24)
+            return false;
+        out.metric = ReadU32(bytes, 20) & 0x00FFFFFFu;
+    }
+    else if(h.type == ExternalLsa)
+    {
+        if(h.length < 32)
+            return false;
+        out.mask = ReadIpv4(bytes, 20);
+        out.forwarding = ReadIpv4(bytes, 24);
+        out.metric = ReadU32(bytes, 28);
+    }
+    else if(h.type == NssaExternalLsa)
+    {
+        if(h.length < 32)
+            return false;
+        out.mask = ReadIpv4(bytes, 20);
+        out.forwarding = ReadIpv4(bytes, 24);
+        out.metric = ReadU32(bytes, 28);
     }
 
     off += h.length;
@@ -238,6 +370,31 @@ std::vector<uint8_t> OspfPacket::ToBytes() const
 
     out.insert(out.end(), payload.begin(), payload.end());
 
+    if(authType == AuthMd5)
+    {
+        if(digestAlg > 2)
+            return {};
+        if(digestAlg == 0 && md5Key.size() != 16)
+            return {};
+        if(digestAlg != 0 && md5Key.empty())
+            return {};
+        std::size_t digestLen = CryptoDigestLen(digestAlg);
+        out[12] = 0;
+        out[13] = 0;
+        out[16] = 0;
+        out[17] = 0;
+        out[18] = authKeyId;
+        out[19] = uint8_t(digestLen);
+        out[20] = uint8_t(cryptoSeq >> 24);
+        out[21] = uint8_t(cryptoSeq >> 16);
+        out[22] = uint8_t(cryptoSeq >> 8);
+        out[23] = uint8_t(cryptoSeq);
+
+        std::vector<uint8_t> digest = CryptoDigest(out, md5Key, digestAlg);
+        out.insert(out.end(), digest.begin(), digest.end());
+        return out;
+    }
+
     uint16_t c = PacketChecksum(out);
     out[12] = uint8_t(c >> 8);
     out[13] = uint8_t(c);
@@ -245,7 +402,8 @@ std::vector<uint8_t> OspfPacket::ToBytes() const
     return out;
 }
 
-bool OspfPacket::TryFromBytes(const std::vector<uint8_t> &buf, OspfPacket &out)
+bool OspfPacket::TryFromBytes(const std::vector<uint8_t> &buf, OspfPacket &out,
+                              const std::string &md5Key, uint8_t digestAlg)
 {
     if(buf.size() < 24)
         return false;
@@ -256,14 +414,33 @@ bool OspfPacket::TryFromBytes(const std::vector<uint8_t> &buf, OspfPacket &out)
     if(len < 24 || len > buf.size())
         return false;
 
-    std::vector<uint8_t> data(buf.begin(), buf.begin() + len);
-    uint16_t stored = ReadU16(data, 12);
-    if(PacketChecksum(data) != stored)
+    uint16_t at = ReadU16(buf, 14);
+    if(at > AuthMd5)
         return false;
 
-    uint16_t at = ReadU16(data, 14);
-    if(at != AuthNone && at != AuthSimple)
+    std::vector<uint8_t> data(buf.begin(), buf.begin() + len);
+    uint16_t stored = ReadU16(data, 12);
+
+    if(at == AuthMd5)
+    {
+        if(digestAlg > 2)
+            return false;
+        if(digestAlg == 0 && md5Key.size() != 16)
+            return false;
+        if(digestAlg != 0 && md5Key.empty())
+            return false;
+        std::size_t digestLen = CryptoDigestLen(digestAlg);
+        if(buf.size() < std::size_t(len) + digestLen || data[19] != digestLen)
+            return false;
+        std::vector<uint8_t> calc = CryptoDigest(data, md5Key, digestAlg);
+        for(std::size_t i = 0; i < digestLen; ++i)
+            if(calc[i] != buf[len + i])
+                return false;
+    }
+    else if(PacketChecksum(data) != stored)
+    {
         return false;
+    }
 
     out = OspfPacket();
     out.version = 2;
@@ -275,6 +452,13 @@ bool OspfPacket::TryFromBytes(const std::vector<uint8_t> &buf, OspfPacket &out)
     out.authType = at;
     for(std::size_t i = 0; i < 8; ++i)
         out.auth[i] = data[16 + i];
+    if(at == AuthMd5)
+    {
+        out.authKeyId = data[18];
+        out.cryptoSeq = ReadU32(data, 20);
+        out.md5Key = md5Key;
+        out.digestAlg = digestAlg;
+    }
 
     if(out.type == Hello)
     {

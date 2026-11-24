@@ -1,0 +1,11 @@
+add-device PC1 end
+add-device PC2 end
+add-port PC1 aa:aa:aa:aa:aa:01 10.0.0.1/24
+add-port PC2 aa:aa:aa:aa:aa:02 10.0.0.2/24
+connect PC1:0 PC2:0
+dns-server PC2 on
+dns-record PC2 example.com 10.0.0.1
+dns-record PC2 example.com 10.0.0.2
+dns-cname PC2 www.example.com example.com
+dns-query PC1 10.0.0.2 www.example.com
+run

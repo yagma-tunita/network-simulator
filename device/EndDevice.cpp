@@ -34,6 +34,17 @@ namespace
         void Execute(Engine &) override { dev->AdvanceTrace(); }
         const char *Name() const override { return "trace-next"; }
     };
+
+    struct DhcpTimerEvent : Event
+    {
+        EndDevice *dev;
+        uint64_t gen;
+
+        DhcpTimerEvent(EndDevice *d, uint64_t g) : dev(d), gen(g) {}
+
+        void Execute(Engine &) override { dev->OnDhcpTimer(gen); }
+        const char *Name() const override { return "dhcp-timer"; }
+    };
 }
 
 void EndDevice::OnFrame(Port *port, FramePtr frame)
@@ -109,7 +120,7 @@ void EndDevice::HandleIp(Port *port, FramePtr frame)
 
     if (pkt.protocol == IpPacket::kTcp)
     {
-        if(!HandleTcpStack(port, pkt))
+        if(!HandleTcpStack(port, pkt, frame->src))
             HandleTcp(port, pkt, clock ? clock->Now() : 0);
         return;
     }
@@ -332,6 +343,17 @@ void EndDevice::SetTcpListen(bool on, uint16_t port)
     tcpListenPort = port;
 }
 
+void EndDevice::SetTcpKeepalive(bool on, uint64_t idle, uint64_t interval,
+                                uint8_t count)
+{
+    tcpKeepalive = on;
+    tcpKeepIdle = idle;
+    tcpKeepInterval = interval;
+    tcpKeepCount = count;
+    for(TcpConnection &c : tcpConns)
+        c.SetKeepalive(on, idle, interval, count);
+}
+
 TcpConnection *EndDevice::FindTcpConn(uint16_t localPort, Ipv4 remote, uint16_t remotePort)
 {
     for(TcpConnection &c : tcpConns)
@@ -341,6 +363,144 @@ TcpConnection *EndDevice::FindTcpConn(uint16_t localPort, Ipv4 remote, uint16_t 
             return &c;
     }
     return nullptr;
+}
+
+void EndDevice::CleanupTcpConns()
+{
+    for(auto it = tcpConns.begin(); it != tcpConns.end(); )
+    {
+        if(it->state == TcpConnection::Closed)
+            it = tcpConns.erase(it);
+        else
+            ++it;
+    }
+}
+
+void EndDevice::SendTcpReset(Port *ingress, const IpPacket &pkt,
+                             const TcpSegment &seg, const Mac &srcMac)
+{
+    if(!ingress || (seg.flags & TcpSegment::kRst))
+        return;
+
+    TcpSegment rst;
+    rst.srcPort = seg.dstPort;
+    rst.dstPort = seg.srcPort;
+
+    uint32_t ack = seg.seq + uint32_t(seg.payload.size());
+    if(seg.flags & TcpSegment::kSyn) ++ack;
+    if(seg.flags & TcpSegment::kFin) ++ack;
+
+    if(seg.flags & TcpSegment::kAck)
+    {
+        rst.flags = TcpSegment::kRst;
+        rst.seq = seg.ack;
+    }
+    else
+    {
+        rst.flags = TcpSegment::kRst | TcpSegment::kAck;
+        rst.ack = ack;
+    }
+
+    IpPacket out(ingress->ip, pkt.srcIp, IpPacket::kTcp,
+                 rst.ToBytes(ingress->ip, pkt.srcIp));
+
+    ++tcpResetsSent;
+    ingress->Send(std::make_shared<const EthernetFrame>(
+        srcMac, ingress->mac, EthernetFrame::kIPv4, out.ToBytes()));
+}
+
+uint32_t EndDevice::TcpCookieSecret(Port *port) const
+{
+    uint32_t h = 0x9e3779b9u;
+    if(port)
+    {
+        for(std::size_t i = 0; i < 6; ++i)
+            h = (h ^ port->mac.bytes[i]) * 16777619u;
+        h = (h ^ port->ip.value) * 16777619u;
+    }
+    return h;
+}
+
+uint32_t EndDevice::TcpCookie(Port *port, Ipv4 remote, uint16_t rport,
+                              uint32_t clientIsn, uint64_t bucket) const
+{
+    uint32_t h = TcpCookieSecret(port);
+    h = (h ^ remote.value) * 16777619u;
+    h = (h ^ uint32_t(rport)) * 16777619u;
+    h = (h ^ uint32_t(tcpListenPort)) * 16777619u;
+    h = (h ^ clientIsn) * 16777619u;
+    h = (h ^ uint32_t(bucket)) * 16777619u;
+    h ^= h >> 16;
+    return h ? h : 1;
+}
+
+void EndDevice::SendTcpCookieSynAck(Port *ingress, const IpPacket &pkt,
+                                    const TcpSegment &seg, const Mac &srcMac,
+                                    uint32_t clientIsn)
+{
+    if(!ingress)
+        return;
+
+    uint64_t bucket = (clock ? clock->Now() : 0) / 30;
+    uint32_t iss = TcpCookie(ingress, pkt.srcIp, seg.srcPort, clientIsn, bucket);
+
+    TcpSegment syn;
+    syn.srcPort = tcpListenPort;
+    syn.dstPort = seg.srcPort;
+    syn.seq = iss;
+    syn.ack = clientIsn + 1;
+    syn.flags = TcpSegment::kSyn | TcpSegment::kAck;
+    syn.window = 65535;
+    syn.options = { 2, 4, 0x03, 0xE8 };
+
+    IpPacket out(ingress->ip, pkt.srcIp, IpPacket::kTcp,
+                 syn.ToBytes(ingress->ip, pkt.srcIp));
+
+    ++tcpCookiesSent;
+    ingress->Send(std::make_shared<const EthernetFrame>(
+        srcMac, ingress->mac, EthernetFrame::kIPv4, out.ToBytes()));
+}
+
+bool EndDevice::AcceptTcpCookie(Port *ingress, const IpPacket &pkt,
+                                const TcpSegment &seg, const Mac &)
+{
+    if(!ingress || !tcpListenEnabled)
+        return false;
+    if(!(seg.flags & TcpSegment::kAck) || (seg.flags & TcpSegment::kSyn))
+        return false;
+    if(seg.ack == 0 || seg.seq == 0)
+        return false;
+
+    uint32_t iss = seg.ack - 1;
+    uint32_t clientIsn = seg.seq - 1;
+    uint64_t bucket = (clock ? clock->Now() : 0) / 30;
+    uint32_t expected = TcpCookie(ingress, pkt.srcIp, seg.srcPort, clientIsn, bucket);
+    if(iss != expected)
+    {
+        expected = TcpCookie(ingress, pkt.srcIp, seg.srcPort, clientIsn,
+                             bucket > 0 ? bucket - 1 : 0);
+        if(iss != expected)
+            return false;
+    }
+
+    if(tcpConns.size() >= kMaxTcpConns)
+        return false;
+
+    tcpConns.emplace_back();
+    TcpConnection &c = tcpConns.back();
+    TcpConnection *cp = &c;
+    c.SetScheduler(scheduler);
+    c.out = [this, cp](const TcpSegment &s) { SendTcpSegment(*cp, s); };
+    c.onData = [cp](const std::vector<uint8_t> &data) { cp->SendData(data); };
+    c.onKeepaliveTimeout = []() { std::cout << "tcp: keepalive timeout\n"; };
+    c.SetKeepalive(tcpKeepalive, tcpKeepIdle, tcpKeepInterval, tcpKeepCount);
+    c.OpenPassiveCookie(ingress->ip, tcpListenPort, pkt.srcIp,
+                        seg.srcPort, clientIsn, iss);
+    c.OnSegment(seg, pkt.srcIp);
+
+    ++tcpAccepted;
+    ++tcpCookiesAccepted;
+    return true;
 }
 
 void EndDevice::SendTcpSegment(TcpConnection &conn, const TcpSegment &seg)
@@ -374,9 +534,11 @@ void EndDevice::SendTcpSegment(TcpConnection &conn, const TcpSegment &seg)
         arp.SendArpRequest(nextHop, egress);
 }
 
-bool EndDevice::HandleTcpStack(Port *port, const IpPacket &pkt)
+bool EndDevice::HandleTcpStack(Port *port, const IpPacket &pkt, const Mac &srcMac)
 {
     if(!port) return false;
+
+    CleanupTcpConns();
 
     TcpSegment raw;
     if(!TcpSegment::TryFromBytes(pkt.payload, raw))
@@ -386,9 +548,42 @@ bool EndDevice::HandleTcpStack(Port *port, const IpPacket &pkt)
     bool listening = !conn && tcpListenEnabled && raw.dstPort == tcpListenPort &&
                      (raw.flags & TcpSegment::kSyn) && !(raw.flags & TcpSegment::kAck);
 
-    if(!conn && !listening)
-        return false;
+    bool cookieAck = !conn && tcpListenEnabled && raw.dstPort == tcpListenPort &&
+                     (raw.flags & TcpSegment::kAck) && !(raw.flags & TcpSegment::kSyn);
+    if(cookieAck && AcceptTcpCookie(port, pkt, raw, srcMac))
+        return true;
 
+    if(!conn && tcpListenEnabled && raw.dstPort == tcpListenPort &&
+       (raw.flags & TcpSegment::kSyn) && !(raw.flags & TcpSegment::kAck))
+    {
+        if(tcpConns.size() >= kMaxTcpConns)
+        {
+            ++tcpDropped;
+            SendTcpReset(port, pkt, raw, srcMac);
+            return true;
+        }
+
+        std::size_t halfOpen = 0;
+        for(const TcpConnection &c : tcpConns)
+            if(c.state == TcpConnection::SynRcvd)
+                ++halfOpen;
+
+        if(halfOpen >= tcpBacklog)
+        {
+            SendTcpCookieSynAck(port, pkt, raw, srcMac, raw.seq);
+            return true;
+        }
+    }
+
+    if(!conn && !listening)
+    {
+        if(tcpEchoEnabled && raw.dstPort == tcpEchoPort)
+            return false;
+        if(tcpClient.active && raw.dstPort == tcpClient.sport)
+            return false;
+        SendTcpReset(port, pkt, raw, srcMac);
+        return true;
+    }
     TcpSegment seg;
     if(!TcpSegment::TryFromBytes(pkt.payload, seg, pkt.srcIp, pkt.dstIp))
         return true;
@@ -399,14 +594,24 @@ bool EndDevice::HandleTcpStack(Port *port, const IpPacket &pkt)
         return true;
     }
 
+    if(tcpConns.size() >= kMaxTcpConns)
+    {
+        ++tcpDropped;
+        SendTcpReset(port, pkt, raw, srcMac);
+        return true;
+    }
+
     tcpConns.emplace_back();
     TcpConnection &c = tcpConns.back();
     TcpConnection *cp = &c;
     c.SetScheduler(scheduler);
     c.out = [this, cp](const TcpSegment &s) { SendTcpSegment(*cp, s); };
     c.onData = [cp](const std::vector<uint8_t> &data) { cp->SendData(data); };
+    c.onKeepaliveTimeout = []() { std::cout << "tcp: keepalive timeout\n"; };
+    c.SetKeepalive(tcpKeepalive, tcpKeepIdle, tcpKeepInterval, tcpKeepCount);
     c.Listen(port->ip, tcpListenPort);
     c.OnSegment(seg, pkt.srcIp);
+    ++tcpAccepted;
     return true;
 }
 
@@ -420,11 +625,22 @@ void EndDevice::TcpConnect(Ipv4 targetIp, uint16_t dstPort, const std::string &t
         return;
     }
 
+    CleanupTcpConns();
+    if(tcpConns.size() >= kMaxTcpConns)
+    {
+        ++tcpDropped;
+        std::cout << "tcp: connection limit\n";
+        return;
+    }
+
     tcpConns.emplace_back();
     TcpConnection &c = tcpConns.back();
     TcpConnection *cp = &c;
     c.SetScheduler(scheduler);
     c.out = [this, cp](const TcpSegment &s) { SendTcpSegment(*cp, s); };
+    c.onReset = []() { std::cout << "tcp: connection reset\n"; };
+    c.onKeepaliveTimeout = []() { std::cout << "tcp: keepalive timeout\n"; };
+    c.SetKeepalive(tcpKeepalive, tcpKeepIdle, tcpKeepInterval, tcpKeepCount);
     c.onData = [targetIp, dstPort](const std::vector<uint8_t> &data) {
         std::string txt(data.begin(), data.end());
         std::cout << "tcp reply from " << targetIp.ToString() << ":" << dstPort
@@ -436,7 +652,8 @@ void EndDevice::TcpConnect(Ipv4 targetIp, uint16_t dstPort, const std::string &t
     };
 
     uint16_t localPort = nextTcpLocalPort++;
-    c.OpenActive(egress->ip, localPort, targetIp, dstPort, 1000 + localPort);
+    c.OpenActive(egress->ip, localPort, targetIp, dstPort, 0);
+    ++tcpAccepted;
     std::cout << "tcp: connecting to " << targetIp.ToString()
               << ":" << dstPort << "\n";
 }
@@ -475,7 +692,26 @@ void EndDevice::SendDhcpPacket(Port *egress, const DhcpMessage &msg)
     }
     d.payload = msg.ToBytes();
 
-    Ipv4 src = (msg.op == DhcpMessage::BootRequest) ? Ipv4::Any() : egress->ip;
+    if(msg.op == DhcpMessage::BootReply && !(msg.giaddr == Ipv4::Any()))
+    {
+        std::string payload(d.payload.begin(), d.payload.end());
+        SendUdp(msg.giaddr, 67, payload, 67);
+        return;
+    }
+
+    if(msg.op == DhcpMessage::BootReply && !(msg.ciaddr == Ipv4::Any()))
+    {
+        std::string payload(d.payload.begin(), d.payload.end());
+        SendUdp(msg.ciaddr, 68, payload, 67);
+        return;
+    }
+
+    Ipv4 src = Ipv4::Any();
+    if(msg.op == DhcpMessage::BootReply)
+        src = egress->ip;
+    else if(!(msg.ciaddr == Ipv4::Any()))
+        src = msg.ciaddr;
+
     IpPacket pkt(src, Ipv4::Broadcast(), IpPacket::kUdp, d.ToBytes());
     egress->Send(std::make_shared<const EthernetFrame>(
         Mac::Broadcast(), egress->mac, EthernetFrame::kIPv4, pkt.ToBytes()));
@@ -486,10 +722,16 @@ void EndDevice::StartDhcpClient(Port *p)
     if(!p)
         return;
 
+    ++dhcpTimerGen;
     dhcpClientActive = true;
     dhcpState = 1;
     dhcpClientPort = p;
     dhcpXid = nextDhcpXid++;
+    dhcpLeaseSec = 0;
+    dhcpLeaseEnd = 0;
+    dhcpRenewAt = 0;
+    dhcpRebindAt = 0;
+    dhcpServerAddr = Ipv4::Any();
 
     DhcpMessage m;
     m.op = DhcpMessage::BootRequest;
@@ -498,6 +740,85 @@ void EndDevice::StartDhcpClient(Port *p)
     m.chaddr = p->mac;
     m.type = DhcpMessage::Discover;
     SendDhcpPacket(p, m);
+}
+
+void EndDevice::ScheduleDhcpTimer(uint64_t at)
+{
+    if(!scheduler)
+        return;
+    uint64_t now = clock ? clock->Now() : 0;
+    if(at <= now)
+        at = now + 1;
+    uint64_t gen = ++dhcpTimerGen;
+    scheduler->ScheduleAfter(at - now,
+        std::make_unique<DhcpTimerEvent>(this, gen));
+}
+
+void EndDevice::OnDhcpTimer(uint64_t gen)
+{
+    if(gen != dhcpTimerGen || !dhcpClientActive)
+        return;
+
+    uint64_t now = clock ? clock->Now() : 0;
+    if(dhcpLeaseEnd != 0 && now >= dhcpLeaseEnd)
+    {
+        if(dhcpClientPort)
+            dhcpClientPort->hasIp = false;
+        dhcpClientActive = false;
+        dhcpState = 0;
+        std::cout << "dhcp: lease expired\n";
+        return;
+    }
+
+    if(dhcpState == 3 && now >= dhcpRenewAt)
+    {
+        dhcpState = 4;
+        SendDhcpRenew(false);
+        ScheduleDhcpTimer(dhcpRebindAt);
+        return;
+    }
+
+    if(dhcpState == 4 && now >= dhcpRebindAt)
+    {
+        dhcpState = 5;
+        SendDhcpRenew(true);
+        ScheduleDhcpTimer(dhcpLeaseEnd);
+        return;
+    }
+
+    ScheduleDhcpTimer(dhcpRenewAt);
+}
+
+void EndDevice::SendDhcpRenew(bool rebind)
+{
+    if(!dhcpClientPort || !dhcpClientActive ||
+       dhcpServerAddr == Ipv4::Any())
+        return;
+
+    dhcpXid = nextDhcpXid++;
+    DhcpMessage m;
+    m.op = DhcpMessage::BootRequest;
+    m.xid = dhcpXid;
+    m.flags = rebind ? 0x8000 : 0;
+    m.chaddr = dhcpClientPort->mac;
+    m.ciaddr = dhcpClientPort->ip;
+    m.type = DhcpMessage::Request;
+    m.hasServerId = true;
+    m.serverId = dhcpServerAddr;
+
+    if(rebind)
+    {
+        SendDhcpPacket(dhcpClientPort, m);
+    }
+    else
+    {
+        UdpDatagram d;
+        d.srcPort = 68;
+        d.dstPort = 67;
+        d.payload = m.ToBytes();
+        SendUdp(dhcpServerAddr, 67,
+                std::string(d.payload.begin(), d.payload.end()), 68);
+    }
 }
 
 void EndDevice::HandleDhcp(Port *port, const IpPacket &, const UdpDatagram &dgram)
@@ -550,6 +871,9 @@ void EndDevice::HandleDhcp(Port *port, const IpPacket &, const UdpDatagram &dgra
             r.xid = m.xid;
             r.flags = m.flags;
             r.chaddr = client;
+            r.giaddr = m.giaddr;
+            r.hops = m.hops;
+            r.ciaddr = m.ciaddr;
             r.yiaddr = ip;
             r.siaddr = port->ip;
             r.type = DhcpMessage::Offer;
@@ -581,6 +905,9 @@ void EndDevice::HandleDhcp(Port *port, const IpPacket &, const UdpDatagram &dgra
             r.xid = m.xid;
             r.flags = m.flags;
             r.chaddr = client;
+            r.giaddr = m.giaddr;
+            r.hops = m.hops;
+            r.ciaddr = m.ciaddr;
             r.type = ok ? DhcpMessage::Ack : DhcpMessage::Nak;
             r.hasServerId = true;
             r.serverId = port->ip;
@@ -632,8 +959,10 @@ void EndDevice::HandleDhcp(Port *port, const IpPacket &, const UdpDatagram &dgra
             return;
         }
 
-        if(m.type == DhcpMessage::Ack && dhcpState == 2)
+        if(m.type == DhcpMessage::Ack &&
+           (dhcpState == 2 || dhcpState == 4 || dhcpState == 5))
         {
+            bool renewal = (dhcpState == 4 || dhcpState == 5);
             uint8_t prefix = dhcpPrefix;
             if(m.hasSubnetMask)
             {
@@ -656,10 +985,23 @@ void EndDevice::HandleDhcp(Port *port, const IpPacket &, const UdpDatagram &dgra
                 dnsServerIp = m.dns;
                 hasDnsServer = true;
             }
+            if(m.hasServerId)
+                dhcpServerAddr = m.serverId;
+            else if(!(dhcpServerId == Ipv4::Any()))
+                dhcpServerAddr = dhcpServerId;
+
+            dhcpLeaseSec = (m.hasLease && m.leaseTime > 0)
+                               ? m.leaseTime : 3600;
+            uint64_t now = clock ? clock->Now() : 0;
+            dhcpLeaseEnd = now + dhcpLeaseSec;
+            dhcpRenewAt = now + dhcpLeaseSec / 2;
+            dhcpRebindAt = now + dhcpLeaseSec * 7 / 8;
 
             dhcpState = 3;
-            std::cout << "dhcp: leased " << m.yiaddr.ToString()
-                      << "/" << int(prefix);
+            ScheduleDhcpTimer(dhcpRenewAt);
+
+            std::cout << (renewal ? "dhcp: renewed " : "dhcp: leased ")
+                      << m.yiaddr.ToString() << "/" << int(prefix);
             if(m.hasRouter)
                 std::cout << " gw " << m.router.ToString();
             if(m.hasDns)
@@ -670,8 +1012,12 @@ void EndDevice::HandleDhcp(Port *port, const IpPacket &, const UdpDatagram &dgra
 
         if(m.type == DhcpMessage::Nak)
         {
+            ++dhcpTimerGen;
+            if(dhcpClientPort)
+                dhcpClientPort->hasIp = false;
             dhcpState = 0;
             dhcpClientActive = false;
+            dhcpLeaseEnd = 0;
             std::cout << "dhcp: request denied\n";
         }
     }
@@ -688,7 +1034,18 @@ void EndDevice::AddDnsRecord(const std::string &name, const Ipv4 &ip)
     key.reserve(name.size());
     for(char c : name)
         key.push_back(char(std::tolower(static_cast<unsigned char>(c))));
-    dnsRecords[key] = ip;
+    dnsRecords[key].push_back(ip);
+}
+
+void EndDevice::AddDnsCname(const std::string &alias, const std::string &target)
+{
+    std::string a;
+    std::string t;
+    for(char c : alias)
+        a.push_back(char(std::tolower(static_cast<unsigned char>(c))));
+    for(char c : target)
+        t.push_back(char(std::tolower(static_cast<unsigned char>(c))));
+    dnsCnames[a] = t;
 }
 
 void EndDevice::DnsQuery(const Ipv4 &server, const std::string &name)
@@ -735,21 +1092,41 @@ void EndDevice::HandleDns(Port *, const IpPacket &pkt, const UdpDatagram &dgram)
         for(char c : m.questions[0].name)
             key.push_back(char(std::tolower(static_cast<unsigned char>(c))));
 
-        auto it = dnsRecords.find(key);
+        std::string name = key;
+        bool found = false;
+        for(int depth = 0; depth < 8; ++depth)
+        {
+            auto cit = dnsCnames.find(name);
+            if(cit == dnsCnames.end())
+                break;
+            DnsAnswer cname;
+            cname.name = name;
+            cname.type = 5;
+            cname.cls = 1;
+            cname.ttl = 60;
+            cname.target = cit->second;
+            r.answers.push_back(cname);
+            name = cit->second;
+        }
+
+        auto it = dnsRecords.find(name);
         if(m.questions[0].qtype == 1 && it != dnsRecords.end())
         {
-            DnsAnswer a;
-            a.name = m.questions[0].name;
-            a.type = 1;
-            a.cls = 1;
-            a.ttl = 60;
-            a.ip = it->second;
-            r.answers.push_back(a);
+            for(const Ipv4 &ip : it->second)
+            {
+                DnsAnswer a;
+                a.name = name;
+                a.type = 1;
+                a.cls = 1;
+                a.ttl = 60;
+                a.ip = ip;
+                r.answers.push_back(a);
+            }
+            found = true;
         }
-        else
-        {
+
+        if(!found)
             r.flags = 0x8183;
-        }
 
         std::vector<uint8_t> bytes = r.ToBytes();
         if(bytes.empty())
@@ -764,10 +1141,16 @@ void EndDevice::HandleDns(Port *, const IpPacket &pkt, const UdpDatagram &dgram)
         if(!m.IsResponse() || m.id != dnsQueryId)
             return;
 
-        if(m.Rcode() == 0 && !m.answers.empty())
+        bool printed = false;
+        for(const DnsAnswer &a : m.answers)
+        {
+            if(a.type != 1)
+                continue;
             std::cout << "dns: " << dnsQueryName << " -> "
-                      << m.answers[0].ip.ToString() << "\n";
-        else
+                      << a.ip.ToString() << "\n";
+            printed = true;
+        }
+        if(!printed)
             std::cout << "dns: " << dnsQueryName << " -> NXDOMAIN\n";
         dnsClientPort = 0;
     }

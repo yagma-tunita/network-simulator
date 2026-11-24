@@ -110,8 +110,24 @@ std::vector<uint8_t> DnsMessage::ToBytes() const
         AppendU16(buf, a.type);
         AppendU16(buf, a.cls);
         AppendU32(buf, a.ttl);
-        AppendU16(buf, 4);
-        AppendIpv4(buf, a.ip);
+
+        if (a.type == 1)
+        {
+            AppendU16(buf, 4);
+            AppendIpv4(buf, a.ip);
+        }
+        else if (a.type == 5)
+        {
+            std::vector<uint8_t> rdata;
+            if (!AppendName(rdata, a.target))
+                return {};
+            AppendU16(buf, uint16_t(rdata.size()));
+            buf.insert(buf.end(), rdata.begin(), rdata.end());
+        }
+        else
+        {
+            AppendU16(buf, 0);
+        }
     }
 
     return buf;
@@ -162,8 +178,15 @@ bool DnsMessage::TryFromBytes(const std::vector<uint8_t> &buf, DnsMessage &out)
         off += 10;
         if (off + rdlen > buf.size())
             return false;
+        std::size_t rdata = off;
         if (a.type == 1 && rdlen == 4)
             a.ip = ReadIpv4(buf, off);
+        else if (a.type == 5)
+        {
+            std::size_t nameOff = rdata;
+            if (!ReadName(buf, nameOff, a.target))
+                return false;
+        }
         off += rdlen;
         out.answers.push_back(a);
     }

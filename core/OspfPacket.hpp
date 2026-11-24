@@ -3,6 +3,7 @@
 #include "Ipv4.hpp"
 #include <cstdint>
 #include <cstddef>
+#include <string>
 #include <vector>
 
 struct OspfLsaHeader
@@ -31,6 +32,8 @@ struct OspfLsa
     uint8_t flags = 0;
     std::vector<OspfRouterLink> links;
     Ipv4 mask;
+    uint32_t metric = 0;
+    Ipv4 forwarding;
     std::vector<Ipv4> attached;
 };
 
@@ -55,13 +58,18 @@ struct OspfPacket
     enum LsaType : uint8_t
     {
         RouterLsa = 1,
-        NetworkLsa = 2
+        NetworkLsa = 2,
+        SummaryLsa = 3,
+        SummaryAsbrLsa = 4,
+        ExternalLsa = 5,
+        NssaExternalLsa = 7
     };
 
     enum AuthType : uint16_t
     {
         AuthNone = 0,
-        AuthSimple = 1
+        AuthSimple = 1,
+        AuthMd5 = 2
     };
 
     uint8_t version = 2;
@@ -72,6 +80,10 @@ struct OspfPacket
     uint16_t checksum = 0;
     uint16_t authType = AuthNone;
     uint8_t auth[8] = {};
+    uint8_t authKeyId = 0;
+    uint32_t cryptoSeq = 0;
+    uint8_t digestAlg = 0;
+    std::string md5Key;
 
     Ipv4 helloMask;
     uint16_t helloInterval = 10;
@@ -95,7 +107,9 @@ struct OspfPacket
     std::vector<OspfLsaHeader> acks;
 
     std::vector<uint8_t> ToBytes() const;
-    static bool TryFromBytes(const std::vector<uint8_t> &buf, OspfPacket &out);
+    static bool TryFromBytes(const std::vector<uint8_t> &buf, OspfPacket &out,
+                             const std::string &md5Key = std::string(),
+                             uint8_t digestAlg = 0);
 
     static uint16_t LsaChecksum(const std::vector<uint8_t> &lsa);
     static uint16_t PacketChecksum(const std::vector<uint8_t> &pkt);

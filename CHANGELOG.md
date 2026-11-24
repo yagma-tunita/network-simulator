@@ -31,26 +31,77 @@ Initial product build.
 - Deprecated `tcp-lite` teaching transport (not TCP).
 - DHCP server/client (`dhcp-server`/`dhcp-client`; pool, gateway and DNS option)
   and a DNS A-record server plus resolver (`dns-server`/`dns-record`/`dns-query`).
+- DHCP relay (`dhcp-relay`) with giaddr rewriting and unicast server replies;
+  DNS CNAME and multiple-A records (`dns-cname`).
+- DHCP lease lifecycle: renew at 50% by unicast, rebind at 87.5% by broadcast,
+  expiry clears the client address; server ACKs renewals to `ciaddr`.
 - Router NAT: source PAT for TCP/UDP/ICMP (with TCP checksum recomputation) and
   inbound port forwarding (`nat`, `nat-port`, `nat-table`).
 - RIP v2-lite dynamic routing (`rip`, `rip-status`): periodic broadcast updates,
   split horizon, infinity metric, and learned-route timeouts.
-- OSPFv2 single-area core (`ospf`, `ospf-status`): RFC 2328 packet types and
-  checksums, Hello/neighbor state machine, DR/BDR, LSDB with DD/LSR/LSU/LSAck,
-  aging/refresh, Dijkstra SPF, and simple-password auth (`ospf-auth`).
-  Multi-area and MD5 authentication are still planned.
+- OSPFv2 (`ospf`, `ospf-status`): RFC 2328 packet types and checksums,
+  Hello/neighbor state machine, DR/BDR, per-area LSDB with DD/LSR/LSU/LSAck,
+  aging/refresh, Dijkstra SPF, ABR multi-area Type 3 summaries, interface
+  cost/passive policy, and simple-password or MD5 auth (`ospf-auth`).
+  LSA 4/5 and NSSA remain planned.
 - TCP now negotiates MSS and window scaling in SYN/SYN-ACK and applies scaled
   windows.
 - TCP reliability: RTT/RTTVAR-based RTO (RFC 6298 style), oldest-unacked
   retransmission, RST handling, and basic zero-window probing.
 - TCP SACK: SACK-permitted negotiation, receiver SACK blocks for out-of-order
   data, and sender retransmission of the first unsacked hole.
+- TCP connection lifecycle: RST is returned for unmatched segments (unless the
+  deprecated tcp-lite service owns the port), and closed connections are pruned.
+- TCP keepalive (`tcp-keepalive <device> on|off`): idle probes with configurable
+  defaults, peer ACK handling, and keepalive-timeout abort.
+- TCP window updates are processed independently of ACK progress, zero-window
+  persist probes retry until the window opens, and simultaneous open/close are
+  supported.
+- TCP observability/resources: `tcp-status` (state, RTO, cwnd, window, unacked,
+  retransmits, counters), 256-connection per-host cap, and dropped/reset counters.
+- TCP timestamps: SYN/ACK negotiation, TSecr echoing and timestamp-based RTT
+  sampling; deterministic per-endpoint ISN generation; validated RST acceptance.
+- TCP flow behavior: delayed ACK (every second in-order segment or 2 ticks) and
+  Nagle (hold small writes while data is unacknowledged).
+- TCP SACK recovery/DSACK: recovery point tracking, hole retransmission on
+  partial ACK/additional duplicates, and DSACK detection/counters.
+- TCP SYN backlog and stateless cookies: configurable backlog (`tcp-backlog`),
+  cookie SYN-ACK when half-open capacity is exhausted, cookie validation on ACK,
+  and accepted/sent cookie counters.
+- Build/tests no longer delete `build/`; coverage builds into `build/cov/`.
+- IPv4 header checksum is generated and verified on every packet.
+- Go tools split into `cmd/` + `internal/` packages; added `ynpcap` PCAP
+  conformance analyzer (IPv4/TCP/OSPF checksums, handshake, SYN options, OSPF
+  MD5 digest verification with `-ospf-key`) and `make gotest`.
+- OSPF MD5 authentication (`ospf-auth ... md5 <key-id> <key>`), including digest
+  generation/verification and per-neighbor crypto sequence replay checks.
+- OSPF interface policy: `ospf-cost`, `ospf-passive` (passive suppresses
+  Hellos and advertises a stub link), and `ospf-area` per-interface areas.
+- OSPF multi-area: per-area LSDB/SPF, ABR Type 3 summaries, and a three-router
+  area 1 -> area 0 -> area 2 ping scenario.
+- OSPF Type 5 external routes: `ospf-external <router> <ip/prefix> [metric]`,
+  domain-wide LSA flooding, external route installation, and `external=` status.
+- OSPF Type 4 ASBR summaries: ABRs advertise ASBR reachability into other areas,
+  and external routes are installed via the Type 4/ASBR path.
+- OSPF external withdrawal (`ospf-external ... clear`): stale Type 5 LSAs are
+  flushed with MaxAge and external routes are removed.
+- OSPF cryptographic auth now supports SHA-1 and SHA-256 HMAC (RFC 5709) in
+  addition to MD5, with 16/20/32-byte digests and per-algorithm verification.
+- OSPF NSSA (`ospf-area-type ... nssa`): Type 7 external LSAs inside the area,
+  ABR Type 7-to-Type 5 translation, NSSA default summary, Type 5 suppression,
+  and Type 7 withdrawal.
+- CI now runs Go tool tests and the Windows PowerShell scenario suite; `make
+  check` includes Go tests before coverage/soak/perf.
+- OSPF stub areas (`ospf-area-type`): external LSAs are suppressed, the ABR
+  advertises a default summary, and area-only routers do not install external
+  routes.
+- TCP PAWS: stale timestamp segments are discarded while RST is still accepted.
+- TCP keepalive parameters are configurable (`on idle interval count`), DSACK
+  restores cwnd after a spurious recovery, and RST acceptance is window-validated.
 - OSPF: LSA retransmission with LSAck clearing, DD/LSR retransmission, and
   Full-state DD recovery under loss; `ospf_loss` scenario.
 - Optional Go stress runner (`tools/ynstress`) for parallel scenario repetition.
 - Windows test runner (`tests/run_tests.ps1`) plus cross-platform test paths.
-- The earlier experimental "OSPF-lite" was removed; OSPF is being rebuilt to
-  RFC 2328 and is not exposed until the real implementation lands.
 - Link impairment (`set-link ... loss|dup|jitter|clear`) for reliability testing.
 - TCP wire groundwork: options and the ones-complement checksum with pseudo-header.
 - Per-router ACLs (`acl ... in|out allow|deny ...`) and `help <command>`.

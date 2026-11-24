@@ -934,17 +934,267 @@ Conventions:
 - TCP SACK: SACK-permitted in SYN, receiver SACK blocks (up to 3 coalesced
   ranges) on out-of-order/duplicate ACKs, and sender selection of the first
   unsacked hole at the third duplicate ACK.
+- TCP lifecycle: unmatched TCP segments now receive an RST (preserving the
+  deprecated tcp-lite fallback), clients report resets, and closed connection
+  slots are pruned before new connections are created.
+- TCP keepalive: optional per-host (`tcp-keepalive`), 300/75/3 idle/interval/
+  probe defaults, probe ACK handling, activity tracking, and timeout abort with
+  a client/server notification. New `tcp_keepalive` scenario.
+- TCP edge cases: zero-window updates are applied even without ACK progress,
+  window reopening resumes transmission, persist probes keep retrying, and
+  simultaneous open/close transition correctly (unit coverage added).
+- TCP operational hardening: per-host 256-connection cap with RST refusal,
+  dropped/reset/accepted counters, and `tcp-status` showing state, RTO, cwnd,
+  window, unacked bytes and retransmissions. New `tcp_status` scenario.
+- TCP timestamps (RFC 7323-style): SYN/ACK negotiation, TSecr echo,
+  timestamp-based RTT sampling, deterministic per-endpoint ISN generation, and
+  receive-window validation for RST acceptance.
+- TCP flow behavior: delayed ACK (second in-order segment or a 2-tick timer,
+  immediate for out-of-order/control) and Nagle (small writes wait for an ACK
+  while data is outstanding).
+- TCP SACK recovery/DSACK: recovery point, one retransmission per detected hole,
+  cwnd inflation during recovery, exit on full ACK, and receiver DSACK blocks
+  with sender DSACK counters exposed by `tcp-status`.
+- TCP SYN backlog/cookies: per-listener backlog (`tcp-backlog`), stateless
+  cookie SYN-ACK when half-open space is full, cookie validation with a
+  time-bucket secret, and accepted/sent cookie counters. New `tcp_backlog`
+  scenario exercises two simultaneous clients with backlog 1.
+- Build workflow: `make test`/runners no longer clean `build/`; coverage builds
+  in `build/cov/` and leaves the normal build intact.
 - OSPF: added per-neighbor LSA retransmission queues cleared by LSAck, DD/LSR
   retransmission timers, and Full-state DD recovery so a lost final DD no longer
   deadlocks the exchange. New `ospf_loss` scenario converges under 30% loss.
 - Tooling: added `tools/ynstress` (Go) to run all scenarios in parallel and
   repeat them, checking `.want` output and timing. Go is used only for tooling;
   the simulator hot path stays C++17.
-- Tests: 283 unit checks (TCP MSS/WS/SACK/reliability assertions), 47 scenarios
-  including `ospf_loss`; PowerShell runner and Go stress run (`-repeat 3`) pass.
+- Tests: 304 unit checks (TCP MSS/WS/SACK/DSACK/timestamps/delayed-ACK/Nagle/
+  recovery), 51 scenarios including `ospf_loss`, `tcp_reset`, `tcp_keepalive`,
+  `tcp_status` and `tcp_backlog`; PowerShell runner and Go stress run
+  (`-repeat 3`) pass; coverage 58.4% (floor 54%).
 - Scope discipline: no speculative configuration or proto-feature is added;
   every change must alter observable behaviour and come with a unit or scenario
   test. Go stays in tooling; the deterministic hot path remains C++17.
+
+## Phase 53 — Modular Go tooling and PCAP conformance (2026-11-24)
+
+- Go tools are split into `cmd/` entry points and `internal/` packages:
+  `ynstress` (scenario discovery, parallel runner) and `ynpcap` (pcap reader,
+  Ethernet/VLAN, IPv4, TCP, OSPF decoders, conformance checks). `make gotest`
+  runs their Go tests.
+- Added `ynpcap`: validates IPv4/TCP/OSPF checksums, TCP handshake flow and SYN
+  options (MSS/WS/SACK/timestamps), OSPF version/type/checksum and LSA checksums;
+  exits non-zero on issues.
+- IPv4 header checksum is now generated and verified; NAT and forwarding
+  recompute it through `IpPacket::ToBytes`.
+- Integration check: a 218-frame capture containing OSPF and TCP reported
+  `tcp_segments=14 tcp_flows=1 ospf=192 ospf_lsas=10`, all four SYN options
+  present, and `issues=0`.
+- Tests: 305 unit checks, 51 scenarios, Go `go test ./...` for both tools,
+  PowerShell runner and Go stress pass; coverage last measured 58.4%.
+
+## Phase 54 — Live bridge experiment (archived) (2026-11-24)
+
+- Archived to `legacy/live-bridge/`; it is not built, packaged, or part of the
+  offline product. The active simulator no longer exposes `--live` or
+  `Port::bridge`.
+- Original experiment: added `Port::bridge` and `netsim --live` with
+  length-prefixed frames, wall-clock stepping, and a modular Go `ynbridge`
+  (frame/netsim/bridge/tap) for Linux TAP.
+- Real-stack verification (archived): a root TAP run assigned `10.0.0.254/24`,
+  pinged the simulated host `10.0.0.1`, completed a 64 KiB Linux TCP echo,
+  opened 8 concurrent connections, and confirmed a closed port returns RST;
+  `legacy/live-bridge/live_tap.sh` preserves the test.
+- Archived `ynbridge` supports bridge impairment (`-loss`, `-dup`, `-seed`) and
+  signal shutdown; these are not part of the shipped offline build.
+- Tests: 307 unit checks, 51 scenarios, Go tests for active tools, PowerShell
+  and Go stress pass; coverage 58.4%.
+
+## Phase 55 — OSPF MD5 authentication (2026-11-24)
+
+- Added `core/Md5` (RFC 1321) with known-vector tests.
+- OSPF packets support AuthType 2: checksum is zero, the 64-bit auth field
+  carries Key ID/Auth Data Len/sequence, and a 16-byte MD5 digest (over the OSPF
+  packet plus the 16-byte key) is appended after the OSPF length.
+- Router authentication uses a per-router key ID, 16-byte key and monotonic
+  crypto sequence; received MD5 packets verify the digest and reject replayed
+  or older sequence numbers per neighbor.
+- CLI: `ospf-auth <router> md5 <key-id> <16-byte-key>` (help/completion updated).
+- `ynpcap` understands OSPF MD5 packets (auth field, digest presence) and no
+  longer flags AuthType 2 as unsupported.
+- Tests: `ospf_md5` scenario reaches Full; MD5/OSPF unit vectors; 319 unit
+  checks, 52 scenarios; an MD5 OSPF PCAP verifies with `ynpcap -ospf-key`
+  (bad key reported), 30 frames/5 LSAs/0 issues; coverage 58.1%.
+
+## Phase 56 — OSPF interface policy and TCP PAWS (2026-11-24)
+
+- OSPF interfaces carry a cost; Router-LSA transit/stub metrics use it, so SPF
+  paths and `ospf-status` metrics reflect the configured cost.
+- `ospf-cost <router> <dev:idx> <1-65535>` changes an interface cost.
+- `ospf-passive <router> <dev:idx> on|off` suppresses Hellos, drops OSPF input on
+  the interface and advertises the connected subnet as a stub. Both commands
+  persist across OSPF re-enable and update existing interfaces.
+- TCP PAWS: segments whose timestamp is older than the recent peer timestamp are
+  dropped (RST exempt), preventing stale timestamp replay.
+- Tests: `ospf_cost` (route metric 7), `ospf_passive` (`passive=on`, no
+  adjacency); 324 unit checks, 54 scenarios; PowerShell and Go stress pass.
+
+## Phase 57 — OSPF multi-area and ABR summaries (2026-11-24)
+
+- OSPF interfaces carry an area (`ospf-area`); Hello/DD/LSR/LSU validate and use
+  that area, and flooding is restricted to the matching area.
+- LSDB is per-area (`area -> (type, LS ID, adv router)`), with per-area
+  Router/Network LSAs and per-area aging; Router-LSAs only include links in
+  their area.
+- SPF runs per area. ABRs derive reachable networks per area, originate Type 3
+  summary LSAs into other areas (backbone rule enforced when area 0 exists),
+  and install summary routes via the advertising ABR.
+- New `ospf_multiarea` scenario: area 1 -> area 0 -> area 2 with three routers;
+  PC1 pings PC2 across areas, and R1 reports the remote route.
+- Tests: 328 unit checks, 55 scenarios; PowerShell and Go stress pass;
+  coverage 59.1%.
+
+## Phase 58 — OSPF module split and area isolation (2026-11-24)
+
+- Split all OSPF implementation out of `device/Router.cpp` into
+  `device/RouterOspf.cpp` (same `Router` class; no API change). Router.cpp keeps
+  Layer-3 forwarding/NAT/RIP; OSPF HELLO/DD/LSR/LSU/LSAck, LSDB, SPF, ABR and
+  summaries now live in one focused translation unit.
+- `ospf-status` adds `neighbors=N`; `ospf_area_isolation` verifies that routers
+  on the same link but different areas never form adjacency (`neighbors=0`).
+- Tests: 328 unit checks, 56 scenarios; PowerShell and Go stress pass;
+  coverage 57.9%.
+
+## Phase 59 — TCP final hardening (2026-11-24)
+
+- `tcp-keepalive` accepts optional `idle/interval/count` parameters; defaults
+  remain 300/75/3 and apply to existing and future connections.
+- DSACK now undoes a spurious recovery (`cwnd` restored, recovery cleared)
+  instead of only counting the event.
+- RST acceptance is window-validated; unit coverage checks that an out-of-window
+  RST is ignored and an in-window RST closes the connection.
+- Tests: 331 unit checks, 56 scenarios; PowerShell and Go stress pass;
+  coverage 57.8%.
+
+## Phase 60 — OSPF Type 5 external routes (2026-11-24)
+
+- Added Type 4/5 LSA codecs (ASBR summary metric, external mask/forwarding/
+  metric) with checksum coverage.
+- ASBR-style `ospf-external <router> <ip/prefix> [metric]` creates Type 5 LSAs;
+  they are flooded domain-wide (all areas) and stored in a separate external
+  LSDB with the advertising next hop/interface.
+- DD/LSR/LSU/LSAck exchange carries external LSAs; external routes are installed
+  after intra-area routes, with external routes never overriding intra-area or
+  direct routes.
+- `ospf-status` reports the external LSA count. New `ospf_external` scenario
+  (R1 learns 172.16.0.0/16 via R2, metric 20).
+- Tests: 331 unit checks, 57 scenarios; PowerShell and Go stress pass;
+  coverage 58.1%.
+
+## Phase 61 — OSPF Type 4 ASBR summaries (2026-11-24)
+
+- Added Type 4 summary ASBR LSA generation on ABRs and installation of ASBR
+  reachability per area (`ospfAsbrReach`).
+- External Type 5 routes now require ASBR reachability from Router-LSA/Type 4
+  rather than the immediate flooding source; next hop comes from the SPF path.
+- New `ospf_external_area` scenario: ASBR in area 0, area-only router in area 1
+  learns `172.16.0.0/16` via the ABR (`10.1.0.1`, metric 20).
+- Tests: 331 unit checks, 58 scenarios; PowerShell and Go stress pass;
+  coverage 58.5%.
+
+## Phase 62 — OSPF stub areas (2026-11-24)
+
+- Added `ospf-area-type <router> <area-id> stub|normal`; stub status is per area
+  and persists across OSPF re-enable.
+- Stub behavior: Type 5 external LSAs are not flooded into or accepted from the
+  area; DD headers omit them; area-only routers do not install external routes.
+- The ABR advertises a default Type 3 summary (`0.0.0.0/0`) into the stub area;
+  `ospf_stub` verifies the area-only router installs the default via the ABR with
+  no external LSAs.
+- Tests: 331 unit checks, 59 scenarios; PowerShell and Go stress pass;
+  coverage 58.5%.
+
+## Phase 63 — OSPF Type 4/5 codec coverage (2026-11-24)
+
+- Added unit round-trips for Summary-ASBR (Type 4) and External (Type 5) LSAs,
+  including mask, forwarding address, metric and external-type bit. Coverage
+  is 58.5%; unit count 340, scenarios 59.
+
+## Phase 64 — OSPF summary/external withdrawal (2026-11-24)
+
+- Own Type 3 and Type 4 summaries now track desired keys per area and flush
+  stale LSAs with MaxAge when networks/ASBR reachability disappear.
+- `ospf-external <router> clear` withdraws all configured external routes;
+  Type 5 LSAs are flushed domain-wide, peers age them out, and
+  `ospf-status` reports `extroutes=0`.
+- `ospf_external_clear` scenario validates withdrawal end to end.
+- Tests: 340 unit checks, 60 scenarios; PowerShell and Go stress pass;
+  coverage 58.9%.
+
+## Phase 65 — OSPF SHA-1/SHA-256 authentication (2026-11-24)
+
+- Added self-contained SHA-1 and SHA-256 plus the RFC 5709 HMAC construction
+  (normalized key, Apad trailer, inner/outer hashes), with known-vector tests.
+- OSPF crypto authentication is now algorithm-aware: MD5 (16-byte digest),
+  SHA-1 (20), SHA-256 (32); AuthType remains the RFC cryptographic value 2 and
+  the auth data length identifies the digest size.
+- CLI: `ospf-auth <router> md5|sha1|sha256 <key-id> <key>`; MD5 requires a
+  16-byte key, SHA keys are 1..64 bytes.
+- New `ospf_sha256` scenario reaches Full with matching SHA-256 keys; ynpcap
+  understands 16/20/32-byte crypto trailers (MD5 verification when `-ospf-key`
+  and a 16-byte digest are present).
+- Tests: 352 unit checks, 61 scenarios; PowerShell and Go tests pass;
+  coverage 58.6%.
+
+## Phase 66 — OSPF NSSA (2026-11-24)
+
+- `ospf-area-type ... nssa` marks an NSSA; Type 5 LSAs are suppressed in/out of
+  the area like stub, while Type 7 external LSAs are allowed.
+- NSSA ASBRs without a normal-area interface originate Type 7 only; ABRs with a
+  normal interface translate Type 7 LSAs (P-bit set) to Type 5 for the rest of
+  the domain. NSSA ABRs also inject a default Type 3 summary.
+- Type 7 LSA codec added (mask/forwarding/metric) and routes installed inside the
+  NSSA via ASBR reachability.
+- New `ospf_nssa` and `ospf_nssa_translate` scenarios verify Type 7 inside the
+  NSSA and translated Type 5 outside.
+- Tests: 357 unit checks, 63 scenarios; PowerShell and Go stress pass;
+  coverage 58.8%.
+
+## Phase 67 — NSSA withdrawal and CI industrialization (2026-11-24)
+
+- Type 7 external LSAs now withdraw when `ospf-external ... clear` is used:
+  stale Type 7s are flushed in the NSSA and translated Type 5s are withdrawn
+  from the domain. `ospf_nssa_clear` verifies `extroutes=0`.
+- CI: Go tests added to the Linux/macOS/Windows jobs; Windows now runs the
+  PowerShell scenario suite. `make check` now includes `gotest` before coverage,
+  soak, and perf.
+- Verified `make check`: unit/fuzz/scenarios, Go tests, coverage 58.8%, soak,
+  and 8.7M events/s perf floor; build artifacts preserved.
+- Tests: 357 unit checks, 64 scenarios.
+
+## Phase 68 — DHCP relay and DNS CNAME (2026-11-24)
+
+- Added `dhcp-relay <router> <dev:idx> <server-ip>|off`: client broadcasts are
+  rewritten with `giaddr`/hops and unicast to the server; server replies to the
+  relay address are forwarded as UDP 67→68 broadcasts on the client-facing port.
+- DHCP server replies to a relay use unicast to `giaddr`; direct clients keep
+  broadcast behavior.
+- DNS: multiple A records per name, CNAME chains (CNAME + resolved A answers),
+  and `dns-cname <device> <alias> <target>`. DNS answer codec supports A and
+  CNAME RDATA.
+- New `dhcp_relay` and `dns_cname` scenarios. Tests: 361 unit checks, 66
+  scenarios; PowerShell and Go tests pass; coverage 57.0%.
+
+---
+
+## Phase 69 — DHCP lease lifecycle (2026-11-24)
+
+- Clients parse the lease option, renew at 50% (unicast DHCPREQUEST with
+  `ciaddr`), rebind at 87.5% (broadcast), and drop the address at expiry.
+- Server ACKs renewals to `ciaddr`; relayed replies still use `giaddr`.
+- New `dhcp_renew` and `dhcp_expire` scenarios; scenario runners and ynstress
+  now run with `-q` and normalize CRLF for multi-line `.want` files.
+- Tests: 361 unit checks, 68 scenarios; PowerShell and Go tests pass;
+  coverage 57.2%.
 
 ---
 

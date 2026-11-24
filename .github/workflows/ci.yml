@@ -15,15 +15,23 @@ jobs:
       CXX: ${{ matrix.cxx }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y clang
       - name: Unit, fuzz, scenarios, CLI
         run: make test
+      - name: Go tool tests
+        run: make gotest
 
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
       - name: Coverage gate, soak, perf
         run: make check
 
@@ -33,8 +41,13 @@ jobs:
       WERROR: 0
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
       - name: Build and test (no -Werror)
         run: make test
+      - name: Go tool tests
+        run: make gotest
 
   tidy:
     runs-on: ubuntu-latest
@@ -50,6 +63,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
@@ -58,6 +74,14 @@ jobs:
       - name: Build CLI (bundled Lua)
         shell: msys2 {0}
         run: mingw32-make -f Makefile.win
+      - name: Scenario tests (PowerShell)
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File tests\run_tests.ps1
+      - name: Go tool tests
+        shell: powershell
+        run: |
+          Push-Location tools\ynstress; go test ./...; Pop-Location
+          Push-Location tools\ynpcap; go test ./...; Pop-Location
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:

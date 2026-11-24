@@ -11,7 +11,7 @@ LUA_OBJS := $(patsubst third_party/lua/%.c,build/win/lua/%.o,$(LUA_SRCS))
 RES := build/win/yanas_res.o
 CLI := netsim.exe
 
-.PHONY: all clean cli tools
+.PHONY: all clean cli tools gotest
 
 all: $(CLI)
 cli: $(CLI)
@@ -35,4 +35,9 @@ clean:
 
 tools:
 	@if not exist build mkdir build
-	cd tools\ynstress && $(GO) build -o ..\..\build\ynstress.exe .
+	cd tools\ynstress && $(GO) build -o ..\..\build\ynstress.exe ./cmd/ynstress
+	cd tools\ynpcap && $(GO) build -o ..\..\build\ynpcap.exe ./cmd/ynpcap
+
+gotest:
+	cd tools\ynstress && $(GO) test ./...
+	cd tools\ynpcap && $(GO) test ./...

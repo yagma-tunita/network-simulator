@@ -16,7 +16,7 @@ check() {
     local name="${t%.*}"
     local want out
     want="$(cat "${name}.want")"
-    out="$($RUN ./netsim "$t" 2>&1)" || true
+    out="$($RUN ./netsim -q "$t" 2>&1)" || true
     if printf '%s' "$out" | grep -qF "$want" && ! printf '%s' "$out" | grep -qF 'fatal:'; then
         echo "PASS  ${t}"
     else
@@ -43,5 +43,4 @@ if [ -x ./netsim ]; then
 fi
 
 rm -f tests/netsim_test.pcap tests/netsim_saved.yn
-make clean >/dev/null
 exit "$status"

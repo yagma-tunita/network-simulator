@@ -15,14 +15,17 @@ Diagnostics include \fBdevices\fR, \fBlinks\fR, \fBports\fR, \fBroutes\fR,
 \fBarp-table\fR, \fBmac-table\fR, \fBtraceroute\fR, and \fBexport dot|svg\fR.
 UDP echo (\fBudp-echo\fR/\fBudp-send\fR), a real TCP service and client
 (\fBtcp-listen\fR/\fBtcp-connect\fR) with MSS/window-scale negotiation, SACK,
-RTT-based retransmission and zero-window probing; the deprecated
+RTT-based retransmission, RST, keepalive, zero-window persist, simultaneous
+open/close, timestamps, delayed ACK/Nagle, SACK/DSACK recovery, SYN backlog and
+cookies, and \fBtcp-status\fR diagnostics; the deprecated
 \fBtcp-lite-*\fR teaching transport (not TCP); a DHCP server/client
-(\fBdhcp-server\fR/\fBdhcp-client\fR); a DNS server and resolver
-(\fBdns-server\fR/\fBdns-record\fR/\fBdns-query\fR); source NAT/PAT and port
+(\fBdhcp-server\fR/\fBdhcp-client\fR/\fBdhcp-relay\fR); a DNS server and resolver
+(\fBdns-server\fR/\fBdns-record\fR/\fBdns-cname\fR/\fBdns-query\fR); source NAT/PAT and port
 forwarding (\fBnat\fR/\fBnat-port\fR/\fBnat-table\fR); RIP v2-lite dynamic
-routing (\fBrip\fR/\fBrip-status\fR); and an OSPFv2 single-area core with
-LSDB/SPF and simple-password authentication
-(\fBospf\fR/\fBospf-status\fR/\fBospf-auth\fR). Router
+routing (\fBrip\fR/\fBrip-status\fR); and an OSPFv2 implementation with
+per-area LSDB/SPF and ABR Type 3/4 summaries, Type 5 external routes, stub/NSSA areas (Type 7 translation), interface cost/passive policy and
+simple-password, MD5, SHA-1 or SHA-256
+authentication (\fBospf\fR/\fBospf-status\fR/\fBospf-auth\fR/\fBospf-cost\fR/\fBospf-passive\fR/\fBospf-area\fR). Router
 \fBacl\fR rules, \fBset-link ... loss|dup|jitter|clear\fR impairment, an ASCII
 \fBmap\fR, \fBhelp <command>\fR, and \fBgenerate tree\fR are also available.
 .SH OPTIONS

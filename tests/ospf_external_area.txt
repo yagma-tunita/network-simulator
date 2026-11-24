@@ -1,0 +1,22 @@
+add-device R1 router
+add-device R2 router
+add-device R3 router
+add-device R4 router
+add-port R1 aa:00:00:00:00:01 10.1.0.1/24
+add-port R1 aa:00:00:00:00:02 10.0.0.1/24
+add-port R2 aa:00:00:00:00:03 10.0.0.2/24
+add-port R2 aa:00:00:00:00:04 10.0.1.1/24
+add-port R3 aa:00:00:00:00:05 10.0.1.2/24
+add-port R4 aa:00:00:00:00:06 10.1.0.2/24
+connect R1:0 R4:0
+connect R1:1 R2:0
+connect R2:1 R3:0
+ospf-area R1 R1:0 0.0.0.1
+ospf-area R4 R4:0 0.0.0.1
+ospf-external R3 172.16.0.0/16 20
+ospf R1 on
+ospf R2 on
+ospf R3 on
+ospf R4 on
+run 200
+ospf-status R4

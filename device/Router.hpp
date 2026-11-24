@@ -9,6 +9,7 @@
 #include <map>
 #include <tuple>
 #include <vector>
+#include <string>
 #include <cstddef>
 
 struct Port;
@@ -22,6 +23,7 @@ struct Route
     uint16_t metric = 0;
     bool dynamic = false;
     bool ospf = false;
+    bool external = false;
     uint32_t ospfOrigin = 0;
     Port *learnedFromPort = nullptr;
     uint64_t expiresAt = 0;
@@ -91,6 +93,7 @@ struct Router : Device
         Mac mac;
         uint8_t state = OspfNbrDown;
         uint8_t priority = 1;
+        uint32_t cryptoSeq = 0;
         uint64_t lastHello = 0;
         bool master = false;
         bool sentFull = false;
@@ -104,8 +107,11 @@ struct Router : Device
     struct OspfInterface
     {
         Port *port = nullptr;
+        Ipv4 area;
         uint8_t state = OspfIfDown;
         uint8_t priority = 1;
+        uint16_t cost = 1;
+        bool passive = false;
         uint64_t waitUntil = 0;
         Ipv4 dr;
         Ipv4 bdr;
@@ -113,6 +119,22 @@ struct Router : Device
         Ipv4 bdrIp;
         std::map<uint32_t, OspfNeighbor> neighbors;
     };
+
+    struct OspfExternal
+    {
+        Ipv4Subnet dst;
+        uint32_t metric = 20;
+        bool type2 = false;
+    };
+
+    struct OspfExtLsa
+    {
+        OspfLsa lsa;
+        Ipv4 nextHop;
+        Port *port = nullptr;
+    };
+
+    using OspfKey = std::tuple<uint8_t, uint32_t, uint32_t>;
 
     static constexpr std::size_t kMaxPendingPerDest = 32;
     static constexpr uint64_t kPendingTimeout = 300;
@@ -134,6 +156,7 @@ struct Router : Device
     std::vector<NatTranslation> natTable;
     std::vector<NatForward> natForwards;
     uint16_t nextNatPort = 40000;
+    std::map<Port *, Ipv4> dhcpRelayServers;
 
     bool ripEnabled = false;
     uint64_t ripGen = 0;
@@ -149,8 +172,22 @@ struct Router : Device
     Ipv4 ospfAreaId;
     uint16_t ospfAuthType = OspfPacket::AuthNone;
     uint8_t ospfPassword[8] = {};
+    uint8_t ospfKeyId = 0;
+    uint32_t ospfCryptoSeq = 0;
+    uint8_t ospfDigestAlg = 0;
+    std::string ospfKey;
     uint32_t ospfSeq = 1;
-    std::map<std::tuple<uint8_t, uint32_t, uint32_t>, OspfLsa> ospfLsdb;
+    std::map<Port *, uint16_t> ospfCostCfg;
+    std::map<Port *, bool> ospfPassiveCfg;
+    std::map<Port *, Ipv4> ospfAreaCfg;
+    std::map<uint32_t, bool> ospfStubAreas;
+    std::map<uint32_t, bool> ospfNssaAreas;
+    std::map<uint32_t, std::map<OspfKey, OspfLsa>> ospfLsdb;
+    std::map<uint32_t, std::map<Ipv4Subnet, uint32_t>> ospfAreaNets;
+    std::map<uint32_t, std::map<uint32_t, uint32_t>> ospfAreaRouterDist;
+    std::map<uint32_t, OspfExtLsa> ospfAsbrReach;
+    std::vector<OspfExternal> ospfExternals;
+    std::map<OspfKey, OspfExtLsa> ospfExternalLsdb;
     std::vector<OspfInterface> ospfIfaces;
 
     void FlushPending();
@@ -166,6 +203,9 @@ struct Router : Device
     bool ApplyNatIngress(Port *ingress, IpPacket &pkt);
     void ApplyNatEgress(Port *ingress, Port *egress, IpPacket &pkt);
     uint16_t AllocNatPort(uint8_t proto, const Ipv4 &outsideIp);
+    void SetDhcpRelay(Port *port, bool on, const Ipv4 &server);
+    void HandleDhcpRelay(Port *ingress, const IpPacket &pkt,
+                         const UdpDatagram &dgram);
 
     void SetRip(bool on);
     void RipTick(uint64_t gen);
@@ -199,11 +239,18 @@ struct Router : Device
     void OspfHandleLsaAck(Port *ingress, const OspfPacket &pkt);
     void OspfSendLsu(OspfInterface &ifc, OspfNeighbor &n,
                      const std::vector<OspfLsa> &lsas);
-    void OspfFlood(const OspfLsa &lsa, Port *except);
+    void OspfFlood(uint32_t area, const OspfLsa &lsa, Port *except);
     void OspfConverge();
-    OspfLsa OspfBuildRouterLsa();
+    OspfLsa OspfBuildRouterLsa(uint32_t area);
     OspfLsa OspfBuildNetworkLsa(OspfInterface &ifc);
+    OspfInterface *OspfIfcForPort(Port *p);
     void OspfSync();
+    void OspfSyncArea(uint32_t area);
+    void OspfOriginateSummaries();
+    void OspfOriginateAsbrSummaries();
+    void AddOspfExternal(const Ipv4Subnet &dst, uint32_t metric, bool type2 = false);
+    void OspfOriginateExternals();
+    void OspfFloodExternal(const OspfLsa &lsa, Port *except);
 
     bool IsMyIp(Ipv4 ip) const;
     void AddRoute(const Ipv4Subnet &dst, const Ipv4 &nextHop, bool direct);

@@ -7,6 +7,6 @@ dhcp-server SRV on 10.0.0.100 10.0.0.110 24 10.0.0.1 10.0.0.1
 dns-server SRV on
 dns-record SRV example.com 10.0.0.1
 dhcp-client PC1 0
-run 2000
+run 1000
 dns-query PC1 example.com
-run 2000
+run 1000

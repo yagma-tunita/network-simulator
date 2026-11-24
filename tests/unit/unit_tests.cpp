@@ -11,6 +11,8 @@
 #include "core/DnsMessage.hpp"
 #include "core/RipMessage.hpp"
 #include "core/OspfPacket.hpp"
+#include "core/Md5.hpp"
+#include "core/Sha.hpp"
 #include "device/StpBpdu.hpp"
 #include "device/EndDevice.hpp"
 #include "device/Router.hpp"
@@ -206,6 +208,10 @@ static void TestIpPacket()
     std::vector<uint8_t> bad = b;
     bad[0] = 0x44;
     CHECK(!IpPacket::TryFromBytes(bad, out));
+
+    std::vector<uint8_t> badck = b;
+    badck[8] ^= 0x01;
+    CHECK(!IpPacket::TryFromBytes(badck, out));
 
     std::vector<uint8_t> trunc(b.begin(), b.begin() + 12);
     CHECK(!IpPacket::TryFromBytes(trunc, out));
@@ -848,6 +854,21 @@ static void TestDnsMessage()
     CHECK(out.answers.size() == 1);
     CHECK(out.answers[0].ip == Ipv4("10.0.0.1"));
 
+    DnsMessage cname;
+    cname.id = 8;
+    cname.flags = 0x8180;
+    cname.questions = q.questions;
+    DnsAnswer ca;
+    ca.name = "www.example.com";
+    ca.type = 5;
+    ca.target = "example.com";
+    cname.answers.push_back(ca);
+    std::vector<uint8_t> cb = cname.ToBytes();
+    CHECK(DnsMessage::TryFromBytes(cb, out));
+    CHECK(out.answers.size() == 1);
+    CHECK(out.answers[0].type == 5);
+    CHECK(out.answers[0].target == "example.com");
+
     CHECK(!DnsMessage::TryFromBytes(std::vector<uint8_t>(5, 0), out));
 
     DnsMessage badq;
@@ -933,6 +954,61 @@ static void TestOspfPacket()
     CHECK(rd.mask == Ipv4("255.255.255.0"));
     CHECK(rd.attached.size() == 2);
     CHECK(rd.attached[1] == Ipv4("2.2.2.2"));
+
+    OspfLsa sm;
+    sm.header.type = OspfPacket::SummaryLsa;
+    sm.header.id = Ipv4("192.168.3.0");
+    sm.header.advRouter = Ipv4("1.1.1.1");
+    sm.mask = Ipv4("255.255.255.0");
+    sm.metric = 7;
+    std::vector<uint8_t> sb = OspfPacket::EncodeLsa(sm);
+    off = 0;
+    CHECK(OspfPacket::DecodeLsa(sb, off, sb.size(), rd));
+    CHECK(rd.header.type == OspfPacket::SummaryLsa);
+    CHECK(rd.mask == Ipv4("255.255.255.0"));
+    CHECK(rd.metric == 7);
+
+    OspfLsa asbr;
+    asbr.header.type = OspfPacket::SummaryAsbrLsa;
+    asbr.header.id = Ipv4("3.3.3.3");
+    asbr.header.advRouter = Ipv4("1.1.1.1");
+    asbr.metric = 9;
+    std::vector<uint8_t> asbrb = OspfPacket::EncodeLsa(asbr);
+    off = 0;
+    CHECK(OspfPacket::DecodeLsa(asbrb, off, asbrb.size(), rd));
+    CHECK(rd.header.type == OspfPacket::SummaryAsbrLsa);
+    CHECK(rd.metric == 9);
+
+    OspfLsa ext;
+    ext.header.type = OspfPacket::ExternalLsa;
+    ext.header.id = Ipv4("172.16.0.0");
+    ext.header.advRouter = Ipv4("3.3.3.3");
+    ext.mask = Ipv4("255.255.0.0");
+    ext.forwarding = Ipv4("10.0.0.9");
+    ext.metric = 0x80000014u;
+    std::vector<uint8_t> extb = OspfPacket::EncodeLsa(ext);
+    off = 0;
+    CHECK(OspfPacket::DecodeLsa(extb, off, extb.size(), rd));
+    CHECK(rd.header.type == OspfPacket::ExternalLsa);
+    CHECK(rd.mask == Ipv4("255.255.0.0"));
+    CHECK(rd.forwarding == Ipv4("10.0.0.9"));
+    CHECK((rd.metric & 0x00FFFFFFu) == 20);
+    CHECK((rd.metric & 0x80000000u) != 0);
+
+    OspfLsa n7;
+    n7.header.type = OspfPacket::NssaExternalLsa;
+    n7.header.id = Ipv4("172.16.0.0");
+    n7.header.advRouter = Ipv4("4.4.4.4");
+    n7.mask = Ipv4("255.255.0.0");
+    n7.forwarding = Ipv4("10.0.0.7");
+    n7.metric = 20;
+    std::vector<uint8_t> n7b = OspfPacket::EncodeLsa(n7);
+    off = 0;
+    CHECK(OspfPacket::DecodeLsa(n7b, off, n7b.size(), rd));
+    CHECK(rd.header.type == OspfPacket::NssaExternalLsa);
+    CHECK(rd.mask == Ipv4("255.255.0.0"));
+    CHECK(rd.forwarding == Ipv4("10.0.0.7"));
+    CHECK(rd.metric == 20);
 
     OspfPacket hello;
     hello.type = OspfPacket::Hello;
@@ -1023,6 +1099,120 @@ static void TestOspfPacket()
     CHECK(!OspfPacket::TryFromBytes(std::vector<uint8_t>(23, 0), out));
 }
 
+static std::string Md5Hex(const std::vector<uint8_t> &data)
+{
+    std::array<uint8_t, 16> d = Md5(data);
+    static const char *hex = "0123456789abcdef";
+    std::string out;
+    for(uint8_t b : d)
+    {
+        out.push_back(hex[b >> 4]);
+        out.push_back(hex[b & 0x0f]);
+    }
+    return out;
+}
+
+static void TestMd5()
+{
+    CHECK(Md5Hex({}) == "d41d8cd98f00b204e9800998ecf8427e");
+    CHECK(Md5Hex({'a', 'b', 'c'}) == "900150983cd24fb0d6963f7d28e17f72");
+    CHECK(Md5Hex({'m', 'e', 's', 's', 'a', 'g', 'e', ' ',
+                  'd', 'i', 'g', 'e', 's', 't'}) ==
+          "f96b697d7cb7938d525a2f31aaf161d0");
+}
+
+static void TestOspfMd5()
+{
+    std::string key = "0123456789abcdef";
+    OspfPacket p;
+    p.type = OspfPacket::Hello;
+    p.routerId = Ipv4("10.0.0.1");
+    p.areaId = Ipv4::Any();
+    p.authType = OspfPacket::AuthMd5;
+    p.authKeyId = 7;
+    p.cryptoSeq = 42;
+    p.md5Key = key;
+    p.helloMask = Ipv4("255.255.255.0");
+    p.helloInterval = 10;
+    p.deadInterval = 40;
+
+    std::vector<uint8_t> b = p.ToBytes();
+    CHECK(b.size() == 60);
+
+    OspfPacket out;
+    CHECK(OspfPacket::TryFromBytes(b, out, key));
+    CHECK(out.authType == OspfPacket::AuthMd5);
+    CHECK(out.authKeyId == 7);
+    CHECK(out.cryptoSeq == 42);
+    CHECK(out.type == OspfPacket::Hello);
+
+    CHECK(!OspfPacket::TryFromBytes(b, out, "ffffffffffffffff"));
+    std::vector<uint8_t> bad = b;
+    bad.back() ^= 0x01;
+    CHECK(!OspfPacket::TryFromBytes(bad, out, key));
+
+    OspfPacket badKey;
+    badKey.type = OspfPacket::Hello;
+    badKey.md5Key = "short";
+    badKey.authType = OspfPacket::AuthMd5;
+    CHECK(badKey.ToBytes().empty());
+}
+
+static void TestSha()
+{
+    auto hex = [](const uint8_t *d, std::size_t n) {
+        static const char *h = "0123456789abcdef";
+        std::string o;
+        for(std::size_t i = 0; i < n; ++i)
+        {
+            o.push_back(h[d[i] >> 4]);
+            o.push_back(h[d[i] & 0x0f]);
+        }
+        return o;
+    };
+    std::vector<uint8_t> abc{ 'a', 'b', 'c' };
+    std::array<uint8_t, 20> s1 = Sha1(abc);
+    CHECK(hex(s1.data(), 20) == "a9993e364706816aba3e25717850c26c9cd0d89d");
+    std::array<uint8_t, 32> s2 = Sha256(abc);
+    CHECK(hex(s2.data(), 32) ==
+          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+}
+
+static void TestOspfSha()
+{
+    OspfPacket p;
+    p.type = OspfPacket::Hello;
+    p.routerId = Ipv4("10.0.0.1");
+    p.areaId = Ipv4::Any();
+    p.authType = OspfPacket::AuthMd5;
+    p.digestAlg = 2;
+    p.authKeyId = 9;
+    p.cryptoSeq = 3;
+    p.md5Key = "secret";
+    p.helloMask = Ipv4("255.255.255.0");
+    p.helloInterval = 10;
+    p.deadInterval = 40;
+
+    std::vector<uint8_t> b = p.ToBytes();
+    CHECK(b.size() == 24 + 20 + 32);
+
+    OspfPacket out;
+    CHECK(OspfPacket::TryFromBytes(b, out, "secret", 2));
+    CHECK(out.authType == OspfPacket::AuthMd5);
+    CHECK(out.digestAlg == 2);
+    CHECK(out.authKeyId == 9);
+    CHECK(out.cryptoSeq == 3);
+    CHECK(!OspfPacket::TryFromBytes(b, out, "wrong", 2));
+    CHECK(!OspfPacket::TryFromBytes(b, out, "secret", 1));
+
+    std::vector<uint8_t> sha1b = p.ToBytes();
+    OspfPacket p1 = p;
+    p1.digestAlg = 1;
+    sha1b = p1.ToBytes();
+    CHECK(sha1b.size() == 24 + 20 + 20);
+    CHECK(OspfPacket::TryFromBytes(sha1b, out, "secret", 1));
+}
+
 static void TestTcpEcho()
 {
     Engine e;
@@ -1100,6 +1290,8 @@ static void TestTcpCore()
     CHECK(b.peerWscale == 7);
     CHECK(a.mss == 1000);
     CHECK(b.mss == 1000);
+    CHECK(a.tsEnabled);
+    CHECK(b.tsEnabled);
 
     a.SendData({ 'h', 'e', 'l', 'l', 'o' });
     e.RunUntil(2000);
@@ -1144,6 +1336,270 @@ static void TestTcpSack()
 
     CHECK(got == "abcdefghijklmnopqrst");
     CHECK(a.totalRetransmits > 0);
+    CHECK(!a.inRecovery);
+}
+
+static void TestTcpSimultaneous()
+{
+    Engine e;
+    TcpConnection a, b;
+    a.SetScheduler(&e);
+    b.SetScheduler(&e);
+    Wire w(&e, &a, &b);
+
+    a.OpenActive(Ipv4("10.0.0.1"), 40000, Ipv4("10.0.0.2"), 40001, 1000);
+    b.OpenActive(Ipv4("10.0.0.2"), 40001, Ipv4("10.0.0.1"), 40000, 2000);
+    e.RunUntil(2000);
+    CHECK(a.state == TcpConnection::Established);
+    CHECK(b.state == TcpConnection::Established);
+
+    a.Close();
+    b.Close();
+    e.RunUntil(20000);
+    CHECK(a.state == TcpConnection::Closed);
+    CHECK(b.state == TcpConnection::Closed);
+}
+
+static void TestTcpPersist()
+{
+    Engine e;
+    TcpConnection a, b;
+    a.SetScheduler(&e);
+    b.SetScheduler(&e);
+    Wire w(&e, &a, &b);
+
+    b.Listen(Ipv4("10.0.0.2"), 80);
+    a.OpenActive(Ipv4("10.0.0.1"), 40000, Ipv4("10.0.0.2"), 80, 1000);
+
+    std::string got;
+    b.onData = [&](const std::vector<uint8_t> &d) {
+        got.append(reinterpret_cast<const char *>(d.data()), d.size());
+    };
+
+    e.RunUntil(1000);
+    CHECK(a.state == TcpConnection::Established);
+
+    b.rcvWnd = 0;
+    b.SendSeg(TcpSegment::kAck, b.sndNxt, b.rcvNxt, std::vector<uint8_t>(), false);
+    e.RunUntil(1100);
+    CHECK(a.sndWnd == 0);
+
+    a.SendData({ 'z' });
+    e.RunUntil(2000);
+
+    b.rcvWnd = 65535;
+    b.SendSeg(TcpSegment::kAck, b.sndNxt, b.rcvNxt, std::vector<uint8_t>(), false);
+    e.RunUntil(6000);
+    CHECK(got == "z");
+}
+
+static void TestTcpLimit()
+{
+    Engine e;
+    Topology t;
+    t.SetEngine(&e);
+    t.AddEndDevice("A");
+    t.AddEndDevice("B");
+    t.AddPort("A", Mac("aa:aa:aa:aa:aa:01"), Ipv4("10.0.0.1"), 24);
+    t.AddPort("B", Mac("aa:aa:aa:aa:aa:02"), Ipv4("10.0.0.2"), 24);
+    t.Connect("A", 0, "B", 0);
+
+    EndDevice *a = dynamic_cast<EndDevice *>(t.FindDevice("A"));
+    CHECK(a != nullptr);
+    for(std::size_t i = 0; i < EndDevice::kMaxTcpConns; ++i)
+    {
+        TcpConnection c;
+        c.state = TcpConnection::Established;
+        a->tcpConns.push_back(c);
+    }
+
+    std::string out = Capture([&]() {
+        a->TcpConnect(Ipv4("10.0.0.2"), 80, "x");
+    });
+    CHECK(out.find("tcp: connection limit") != std::string::npos);
+    CHECK(a->tcpConns.size() == EndDevice::kMaxTcpConns);
+}
+
+static void TestTcpDelayedAck()
+{
+    Engine e;
+    TcpConnection a, b;
+    a.SetScheduler(&e);
+    b.SetScheduler(&e);
+    Wire w(&e, &a, &b);
+
+    b.Listen(Ipv4("10.0.0.2"), 80);
+    a.OpenActive(Ipv4("10.0.0.1"), 40000, Ipv4("10.0.0.2"), 80, 0);
+
+    std::string got;
+    b.onData = [&](const std::vector<uint8_t> &d) {
+        got.append(reinterpret_cast<const char *>(d.data()), d.size());
+    };
+
+    e.RunUntil(1000);
+    uint64_t t = e.now;
+    a.SendData({ 'x' });
+    e.RunUntil(t + 2);
+    CHECK(a.sndUna != a.sndNxt);
+    e.RunUntil(t + 50);
+    CHECK(a.sndUna == a.sndNxt);
+    CHECK(got == "x");
+}
+
+static void TestTcpNagle()
+{
+    Engine e;
+    TcpConnection a, b;
+    a.SetScheduler(&e);
+    b.SetScheduler(&e);
+    Wire w(&e, &a, &b);
+
+    b.Listen(Ipv4("10.0.0.2"), 80);
+    a.OpenActive(Ipv4("10.0.0.1"), 40000, Ipv4("10.0.0.2"), 80, 0);
+
+    std::string got;
+    b.onData = [&](const std::vector<uint8_t> &d) {
+        got.append(reinterpret_cast<const char *>(d.data()), d.size());
+    };
+
+    e.RunUntil(1000);
+    uint64_t t = e.now;
+    a.SendData({ 'a' });
+    a.SendData({ 'b' });
+    CHECK(a.sndNxt - a.sndUna == 1);
+    e.RunUntil(t + 100);
+    CHECK(got == "ab");
+}
+
+static void TestTcpDsack()
+{
+    Engine e;
+    TcpConnection a, b;
+    a.SetScheduler(&e);
+    b.SetScheduler(&e);
+    Wire w(&e, &a, &b);
+
+    b.Listen(Ipv4("10.0.0.2"), 80);
+    a.OpenActive(Ipv4("10.0.0.1"), 40000, Ipv4("10.0.0.2"), 80, 0);
+
+    std::string got;
+    b.onData = [&](const std::vector<uint8_t> &d) {
+        got.append(reinterpret_cast<const char *>(d.data()), d.size());
+    };
+
+    e.RunUntil(1000);
+    uint32_t dseq = a.sndNxt;
+    a.SendData({ 'x' });
+    e.RunUntil(1500);
+    CHECK(got == "x");
+    CHECK(a.dsacks == 0);
+
+    TcpSegment dup;
+    dup.srcPort = a.localPort;
+    dup.dstPort = 80;
+    dup.seq = dseq;
+    dup.ack = b.sndNxt;
+    dup.flags = TcpSegment::kAck | TcpSegment::kPsh;
+    dup.window = 65535;
+    dup.payload = { 'x' };
+    b.OnSegment(dup, a.localIp);
+    e.RunUntil(2000);
+    CHECK(a.dsacks > 0);
+}
+
+static void TestTcpLargeTransfer()
+{
+    Engine e;
+    TcpConnection a, b;
+    a.SetScheduler(&e);
+    b.SetScheduler(&e);
+    Wire w(&e, &a, &b);
+
+    b.Listen(Ipv4("10.0.0.2"), 80);
+    a.OpenActive(Ipv4("10.0.0.1"), 40000, Ipv4("10.0.0.2"), 80, 0);
+
+    std::vector<uint8_t> big(65536, 0x5a);
+    std::size_t got = 0;
+    b.onData = [&](const std::vector<uint8_t> &d) { got += d.size(); };
+
+    e.RunUntil(1000);
+    CHECK(a.state == TcpConnection::Established);
+
+    a.SendData(big);
+    e.RunUntil(200000);
+    CHECK(got == big.size());
+}
+
+static void TestTcpPaws()
+{
+    Engine e;
+    TcpConnection a, b;
+    a.SetScheduler(&e);
+    b.SetScheduler(&e);
+    Wire w(&e, &a, &b);
+
+    b.Listen(Ipv4("10.0.0.2"), 80);
+    a.OpenActive(Ipv4("10.0.0.1"), 40000, Ipv4("10.0.0.2"), 80, 0);
+
+    std::string got;
+    b.onData = [&](const std::vector<uint8_t> &d) {
+        got.append(reinterpret_cast<const char *>(d.data()), d.size());
+    };
+
+    e.RunUntil(1000);
+    CHECK(a.state == TcpConnection::Established);
+    CHECK(b.tsEnabled);
+    CHECK(b.tsRecent > 0);
+
+    auto tsopt = [](uint32_t val, uint32_t ecr) {
+        std::vector<uint8_t> o{ 8, 10 };
+        for(int i = 3; i >= 0; --i) o.push_back(uint8_t(val >> (8 * i)));
+        for(int i = 3; i >= 0; --i) o.push_back(uint8_t(ecr >> (8 * i)));
+        return o;
+    };
+
+    TcpSegment old;
+    old.srcPort = a.localPort;
+    old.dstPort = 80;
+    old.seq = a.sndNxt;
+    old.ack = b.sndNxt;
+    old.flags = TcpSegment::kAck | TcpSegment::kPsh;
+    old.options = tsopt(b.tsRecent - 1, 0);
+    old.payload = { 'z' };
+    b.OnSegment(old, a.localIp);
+    CHECK(got.empty());
+
+    TcpSegment fresh = old;
+    fresh.options = tsopt(b.tsRecent + 1, 0);
+    b.OnSegment(fresh, a.localIp);
+    CHECK(got == "z");
+}
+
+static void TestTcpRstValidation()
+{
+    Engine e;
+    TcpConnection a, b;
+    a.SetScheduler(&e);
+    b.SetScheduler(&e);
+    Wire w(&e, &a, &b);
+
+    b.Listen(Ipv4("10.0.0.2"), 80);
+    a.OpenActive(Ipv4("10.0.0.1"), 40000, Ipv4("10.0.0.2"), 80, 0);
+    e.RunUntil(1000);
+    CHECK(a.state == TcpConnection::Established);
+
+    TcpSegment rst;
+    rst.srcPort = 80;
+    rst.dstPort = 40000;
+    rst.flags = TcpSegment::kRst | TcpSegment::kAck;
+    rst.seq = a.rcvNxt + 70000;
+    rst.ack = a.sndNxt;
+    a.OnSegment(rst, b.localIp);
+    CHECK(a.state == TcpConnection::Established);
+
+    rst.seq = a.rcvNxt;
+    a.OnSegment(rst, b.localIp);
+    CHECK(a.state == TcpConnection::Closed);
 }
 
 static void TestTcpRttReset()
@@ -1235,12 +1691,25 @@ int main()
     TestDnsMessage();
     TestRipMessage();
     TestOspfPacket();
+    TestMd5();
+    TestOspfMd5();
+    TestSha();
+    TestOspfSha();
     TestTcpEcho();
     TestAcl();
     TestTcpCore();
     TestTcpRetransmit();
     TestTcpSack();
     TestTcpRttReset();
+    TestTcpDsack();
+    TestTcpRstValidation();
+    TestTcpSimultaneous();
+    TestTcpPersist();
+    TestTcpLimit();
+    TestTcpDelayedAck();
+    TestTcpNagle();
+    TestTcpLargeTransfer();
+    TestTcpPaws();
 
     std::printf("%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

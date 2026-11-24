@@ -1,0 +1,18 @@
+add-device PC1 end
+add-device SRV end
+add-device R1 router
+add-device SW1 switch
+add-port PC1 aa:aa:aa:aa:aa:01
+add-port SRV aa:aa:aa:aa:aa:02 10.1.0.2/24
+add-port R1 aa:00:00:00:00:01 10.0.0.254/24
+add-port R1 aa:00:00:00:00:02 10.1.0.1/24
+add-port SW1 aa:00:00:00:00:11
+add-port SW1 aa:00:00:00:00:12
+connect PC1:0 SW1:0
+connect R1:0 SW1:1
+connect R1:1 SRV:0
+set-gateway SRV 10.1.0.1
+dhcp-server SRV on 10.0.0.100 10.0.0.110 24 10.0.0.254 10.0.0.254
+dhcp-relay R1 R1:0 10.1.0.2
+dhcp-client PC1 0
+run 1000

@@ -12,8 +12,10 @@ $status = 0
 foreach ($file in Get-ChildItem 'tests\*.txt') {
     $wantPath = [System.IO.Path]::ChangeExtension($file.FullName, '.want')
     if (-not (Test-Path $wantPath)) { continue }
-    $want = (Get-Content -Raw $wantPath).TrimEnd()
-    $out = (& .\netsim.exe $file.FullName 2>&1 | Out-String)
+        $want = (Get-Content -Raw $wantPath).TrimEnd()
+        $out = (& .\netsim.exe -q $file.FullName 2>&1 | Out-String)
+        $want = $want -replace "`r`n", "`n"
+        $out = $out -replace "`r`n", "`n"
     if ($out.Contains($want) -and -not $out.Contains('fatal:')) {
         Write-Host "PASS  $($file.Name)"
     } else {
@@ -29,7 +31,9 @@ if ($features -match 'lua') {
         $wantPath = [System.IO.Path]::ChangeExtension($file.FullName, '.want')
         if (-not (Test-Path $wantPath)) { continue }
         $want = (Get-Content -Raw $wantPath).TrimEnd()
-        $out = (& .\netsim.exe $file.FullName 2>&1 | Out-String)
+    $out = (& .\netsim.exe -q $file.FullName 2>&1 | Out-String)
+    $want = $want -replace "`r`n", "`n"
+    $out = $out -replace "`r`n", "`n"
         if ($out.Contains($want) -and -not $out.Contains('fatal:')) {
             Write-Host "PASS  $($file.Name)"
         } else {

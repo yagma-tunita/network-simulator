@@ -7,8 +7,13 @@ study and scenarios: IPv4 subnets, Ethernet frames, ARP, VLAN/802.1Q, MAC-learni
 switches, spanning tree (STP and an RSTP-style rapid mode), static routing, and
 ICMP. It is a **terminal-first, scriptable tool for technical users**: an
 interactive CLI plus `.txt`/`.lua`/`.yn` inputs and bundled Lua, all on a
-deterministic engine. (Former GUI and web front ends are archived under `legacy/`.)
+deterministic engine. (Former GUI/web front ends and the live bridge experiment
+are archived under `legacy/`.)
 It is free software under the GNU GPL v3.0 or later.
+
+`yanas net` is an **offline local tool**: it requires no internet access and
+contacts no external services. Install it, run it, and keep all scenes, captures,
+and outputs on the local machine.
 
 The engine runs on a logical clock, wire formats are byte-accurate, and the
 sources are dependency-free and comment-free (all documentation is here and in
@@ -59,7 +64,7 @@ comment-free; all documentation lives in this README and `DEVELOPMENT_LOG.md`.
 - MAC addresses: parse/format, ordering, zero and broadcast addresses.
 - Ethernet frames with EtherType and an opaque byte payload.
 - ARP request/reply with a standard 28-byte wire format and factory helpers.
-- IPv4 packets with a 20-byte header, TTL handling, and a byte codec.
+- IPv4 packets with a 20-byte header, TTL handling, header checksum, and a byte codec.
 - Ports and point-to-point links with automatic back-reference wiring.
 - Host behavior: ARP resolution and an ARP cache.
 - Switch behavior: MAC learning, flooding, unicast forwarding, MAC-table aging.
@@ -86,22 +91,33 @@ comment-free; all documentation lives in this README and `DEVELOPMENT_LOG.md`.
 - UDP datagrams with a configurable per-host echo service (`udp-echo`/`udp-send`).
 - Real TCP service and client (`tcp-listen`/`tcp-connect`): three-way handshake,
   sequence/ACK, out-of-order reassembly, RTT-based RTO with oldest-unacked
-  retransmission, RST, basic zero-window probing, FIN/TIME_WAIT,
-  slow-start/congestion-avoidance, MSS negotiation, window scaling and SACK.
+  retransmission, RST (including resets for unmatched segments), basic
+  zero-window probing, tunable keepalive (`tcp-keepalive`), simultaneous
+  open/close, PAWS for timestamps, FIN/TIME_WAIT, slow-start/congestion-avoidance,
+  MSS negotiation, window scaling, SACK (including DSACK and SACK-based recovery
+  with cwnd undo) and TCP timestamps (RTT sampling), with delayed ACK, Nagle and
+  validated RST handling.
+  Listener backlog is bounded with
+  stateless SYN cookies; each host is capped at 256 concurrent connections with
+  dropped/reset counters and `tcp-status`.
   `tcp-lite-*` remains as a deprecated teaching transport and is **not** TCP.
-- DHCP server/client (`dhcp-server`/`dhcp-client`) with a configurable address
-  pool, gateway and DNS option; DNS server/client (`dns-server`/`dns-record`/
-  `dns-query`) over UDP. DHCP automatically configures the DNS server for hosts.
+- DHCP server/client with relay (`dhcp-server`/`dhcp-client`/`dhcp-relay`),
+  configurable pool, gateway and DNS option; leases renew at 50%, rebind at
+  87.5%, and expire if no server answers. DNS server/client
+  (`dns-server`/`dns-record`/`dns-cname`/`dns-query`) with A, multiple-A,
+  CNAME and NXDOMAIN. DHCP can configure the host DNS server.
 - Source NAT/PAT and inbound port forwarding on routers (`nat`, `nat-port`,
   `nat-table`): rewrites TCP/UDP/ICMP, recomputes TCP checksums, and supports
   address overloading plus DNAT to inside hosts.
 - RIP v2-lite dynamic routing (`rip`, `rip-status`): periodic updates over UDP
   520, split horizon, infinity metric, learned-route timers, and longest-prefix/
   metric route selection.
-- OSPFv2 single-area core (`ospf`, `ospf-status`): RFC 2328 packets, Hello /
-  neighbor state machine, DR/BDR election, LSDB aging/refresh with DD/LSR/LSU/
-  LSAck exchange and retransmission, Dijkstra SPF routes, and simple-password
-  authentication (`ospf-auth`).
+- OSPFv2 (`ospf`, `ospf-status`): RFC 2328 packets, Hello / neighbor state
+  machine, DR/BDR election, per-area LSDB aging/refresh with DD/LSR/LSU/LSAck
+  exchange and retransmission, Dijkstra SPF routes, ABR Type 3 summaries,
+  Type 4 ASBR summaries, Type 5 external routes (`ospf-external`), stub and
+  NSSA areas (`ospf-area-type`) with Type 7 translation, interface cost/passive
+  policy, and simple-password, MD5, SHA-1 or SHA-256 authentication (`ospf-auth`).
 - Link impairment (`set-link ... loss/dup/jitter/clear`) for reliability testing.
 - Per-router ACLs (in/out, allow/deny by source/destination prefix and protocol).
 - Terminal topology `map` and a tree generator (`generate tree`) for scale tests.
@@ -187,6 +203,7 @@ Internet/
 │   ├── Switch.hpp / .cpp    # Layer-2 switch (+ STP)
 │   ├── StpBpdu.hpp / .cpp   # 802.1D Configuration BPDU codec
 │   ├── Router.hpp / .cpp    # Layer-3 router
+│   ├── RouterOspf.cpp       # OSPF state/LSDB/SPF/ABR (same Router class)
 │   ├── FrameDelivery.hpp / .cpp # frame-delivery event
 │   └── Port.hpp / .cpp
 ├── engine/                  # simulation engine
@@ -618,7 +635,8 @@ Headers use relative includes (`"../core/..."`), so no `-I` flags are needed.
 
 All build products are written under `build/`: object and dependency files in
 `build/obj/<layer>/`, the Lua archive in `build/lua/`, and sanitizer/coverage
-binaries in `build/`. Source directories are never used as object output.
+binaries in `build/` (coverage uses `build/cov/`). Source directories are never
+used as object output, and tests do not delete `build/` automatically.
 
 ## Packaging and signing
 
@@ -699,19 +717,29 @@ udp-echo   <device> on|off [port]              # UDP echo service
 udp-send   <device> <ip> <dport> <text...>     # send a UDP datagram
 tcp-listen <device> on|off [port]              # real TCP echo service
 tcp-connect <device> <ip> <port> [text...]     # real TCP client
+tcp-keepalive <device> on [idle interval count]|off
+tcp-status <device>                            # connections, RTO/window/counters
+tcp-backlog <device> <1-1024>                  # half-open SYN backlog
 dhcp-server <device> on <start> <end> <prefix> <gateway> [dns] | off
 dhcp-client <device> [port-index]              # acquire a lease
-dns-server  <device> on|off                    # DNS A-record server
-dns-record  <device> <name> <ip>               # add a static record
+dhcp-relay  <router> <dev:idx> <server-ip>|off # relay DHCP across subnets
+dns-server  <device> on|off                    # DNS A/CNAME server
+dns-record  <device> <name> <ip>               # add a static A record
+dns-cname   <device> <alias> <target>          # add a CNAME
 dns-query   <device> [server-ip] <name>        # resolve a name
 nat        <router> on <inside-dev:idx> <outside-dev:idx> | off
 nat-port   <router> tcp|udp <public-port> <inside-ip> <inside-port>
 nat-table  <router>
 rip        <router> on|off                     # RIP v2-lite dynamic routing
 rip-status <router>                            # routes with metric/next hop
-ospf       <router> on|off                     # OSPFv2 single-area core
+ospf       <router> on|off                     # OSPFv2 (single/multi-area)
 ospf-status <router>                           # interfaces, neighbors, LSDB, routes
-ospf-auth  <router> none|simple <password>     # simple-password authentication
+ospf-auth  <router> none|simple <password>|md5|sha1|sha256 <key-id> <key>
+ospf-cost  <router> <dev:idx> <1-65535>          # interface cost
+ospf-passive <router> <dev:idx> on|off           # suppress Hellos
+ospf-area  <router> <dev:idx> <area-id>          # per-interface OSPF area
+ospf-area-type <router> <area-id> stub|nssa|normal    # area policy
+ospf-external <router> <ip/prefix> [metric]|clear  # Type 5 external route
 tcp-lite-echo   <device> on|off [port]          # deprecated (NOT TCP)
 tcp-lite-echo-client <device> <ip> <port> <text...>
 acl        <router> in|out allow|deny <src/p> <dst/p> <proto|any>
@@ -802,7 +830,7 @@ Three layers of tests, all runnable with `make test`:
 - `tests/unit/unit_tests.cpp` — unit tests for the codecs and addressing
   (`Ipv4`, `Ipv4Subnet`, `Mac`, `ARP`, `IpPacket`, `IcmpMessage`,
   `EthernetFrame` incl. 802.1Q), TCP option/reliability behaviour and OSPF
-  packet/LSA checksums (283 checks), built with `-Werror` + ASan/UBSan.
+  packet/LSA checksums (357 checks), built with `-Werror` + ASan/UBSan.
 - `tests/fuzz_parsers.cpp` — deterministic fuzzing of every byte parser; must
   stay ASan/UBSan-clean.
 - `tests/*.txt` scenarios — each `NAME.txt` is a scene and `NAME.want` a substring
@@ -829,15 +857,22 @@ powershell -ExecutionPolicy Bypass -File tests\run_tests.ps1
 The PowerShell runner executes every `tests\*.txt` against its `.want`, the Lua
 scenarios when Lua is present, and all examples.
 
-An optional Go stress runner repeats scenarios in parallel (Go is tooling only;
-the simulator hot path remains C++):
+Go tooling is optional (the simulator hot path remains C++17), organized into
+`cmd/` entry points plus `internal/` packages:
 
 ```powershell
 mingw32-make -f Makefile.win tools
+mingw32-make -f Makefile.win gotest
 .\build\ynstress.exe -exe .\netsim.exe -repeat 2 -jobs 4
+.\build\ynpcap.exe capture.pcap
 ```
 
-`make check` adds a coverage gate (about 58% now, floor 54%), a bounded-memory soak
+`ynstress` repeats scenario suites in parallel. `ynpcap` validates a capture's
+IPv4/TCP/OSPF headers, checksums, TCP handshake flow, SYN options (MSS/WS/SACK/
+timestamps), and OSPF packet/LSA checksums; with `-ospf-key` it verifies OSPF MD5
+digests. It exits non-zero on any issue.
+
+`make check` adds a coverage gate (about 57% now, floor 54%), a bounded-memory soak
 (256 MiB address-space cap with STP reconvergence), and a throughput floor.
 
 ## Quick start
@@ -1033,11 +1068,12 @@ Implemented:
       TCP checksum/options groundwork
 - [x] Real TCP stack exposed: handshake, data, RTO retransmission, FIN/TIME_WAIT,
       congestion control; `tcp-listen`/`tcp-connect`; loss-driven retransmission tests
-- [x] DHCP client/server and DNS server/records/query over UDP
+- [x] DHCP client/server with relay and DNS A/CNAME server/resolver over UDP
 - [x] Source NAT/PAT and port forwarding (DNAT) on routers
 - [x] RIP v2-lite dynamic routing (broadcast updates, split horizon, timers)
-- [x] OSPFv2 single-area core: RFC packets, DR/BDR, LSDB exchange/aging, SPF,
-      simple-password authentication
+- [x] OSPFv2: RFC packets, DR/BDR, per-area LSDB, SPF, ABR Type 3/4 summaries,
+      Type 5 external routes with withdrawal, stub/NSSA areas with Type 7
+      translation/withdrawal, cost/passive, MD5/SHA-1/SHA-256 auth
 - [x] Hard resource caps (topology, event queue, pcap, scripts, scenes)
 - [x] Interactive line editing, history, and Tab completion
 - [x] `--json` NDJSON + `--log` structured output
@@ -1054,8 +1090,8 @@ Implemented:
 
 Planned:
 
-- [ ] TCP refinements: keepalive, simultaneous open/close, full persist tuning.
-- [ ] OSPF multi-area/ABR, LSA types 3-5, MD5 authentication, IPv6, full RSTP.
+- [ ] TCP: real-stack interoperability and PCAP conformance verification.
+- [ ] OSPF virtual links, IPv6, full RSTP.
 - [ ] Scale/engineering: `--jobs` parallel scenarios, `src/` restructure, CMake
       presets, three-platform CI.
 - [ ] Full IEEE 802.1w proposal/agreement (current RSTP mode is a rapid subset)

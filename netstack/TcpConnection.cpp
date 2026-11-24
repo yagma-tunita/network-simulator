@@ -24,7 +24,26 @@ namespace
         const char *Name() const override { return "tcp-timewait"; }
     };
 
-    std::vector<uint8_t> BuildSynOptions(uint16_t mss, uint8_t wscale)
+    struct KeepaliveEvent : Event
+    {
+        TcpConnection *conn;
+        uint64_t gen;
+        KeepaliveEvent(TcpConnection *c, uint64_t g) : conn(c), gen(g) {}
+        void Execute(Engine &) override { conn->OnKeepaliveEvent(gen); }
+        const char *Name() const override { return "tcp-keepalive"; }
+    };
+
+    struct DelayedAckEvent : Event
+    {
+        TcpConnection *conn;
+        uint64_t gen;
+        DelayedAckEvent(TcpConnection *c, uint64_t g) : conn(c), gen(g) {}
+        void Execute(Engine &) override { conn->OnDelayedAckEvent(gen); }
+        const char *Name() const override { return "tcp-delayed-ack"; }
+    };
+
+    std::vector<uint8_t> BuildSynOptions(uint16_t mss, uint8_t wscale,
+                                         uint32_t tsVal, uint32_t tsEcr)
     {
         std::vector<uint8_t> o;
         o.push_back(2);
@@ -36,20 +55,45 @@ namespace
         o.push_back(wscale);
         o.push_back(4);
         o.push_back(2);
-        o.push_back(1);
-        o.push_back(1);
-        o.push_back(1);
+        o.push_back(8);
+        o.push_back(10);
+        o.push_back(uint8_t(tsVal >> 24));
+        o.push_back(uint8_t(tsVal >> 16));
+        o.push_back(uint8_t(tsVal >> 8));
+        o.push_back(uint8_t(tsVal));
+        o.push_back(uint8_t(tsEcr >> 24));
+        o.push_back(uint8_t(tsEcr >> 16));
+        o.push_back(uint8_t(tsEcr >> 8));
+        o.push_back(uint8_t(tsEcr));
+        return o;
+    }
+
+    std::vector<uint8_t> BuildTimestampOption(uint32_t tsVal, uint32_t tsEcr)
+    {
+        std::vector<uint8_t> o;
+        o.push_back(8);
+        o.push_back(10);
+        o.push_back(uint8_t(tsVal >> 24));
+        o.push_back(uint8_t(tsVal >> 16));
+        o.push_back(uint8_t(tsVal >> 8));
+        o.push_back(uint8_t(tsVal));
+        o.push_back(uint8_t(tsEcr >> 24));
+        o.push_back(uint8_t(tsEcr >> 16));
+        o.push_back(uint8_t(tsEcr >> 8));
+        o.push_back(uint8_t(tsEcr));
         return o;
     }
 
     void ParseTcpOptions(const std::vector<uint8_t> &opts, uint16_t &mss,
                          uint8_t &wscale, bool &hasMss, bool &hasWs,
-                         bool &hasSack,
+                         bool &hasSack, bool &hasTs, uint32_t &tsVal,
+                         uint32_t &tsEcr,
                          std::vector<std::pair<uint32_t, uint32_t>> &sacks)
     {
         hasMss = false;
         hasWs = false;
         hasSack = false;
+        hasTs = false;
         std::size_t i = 0;
         while(i < opts.size())
         {
@@ -80,6 +124,18 @@ namespace
             {
                 hasSack = true;
             }
+            else if(kind == 8 && len == 10)
+            {
+                tsVal = (uint32_t(opts[i + 2]) << 24) |
+                        (uint32_t(opts[i + 3]) << 16) |
+                        (uint32_t(opts[i + 4]) << 8) |
+                        uint32_t(opts[i + 5]);
+                tsEcr = (uint32_t(opts[i + 6]) << 24) |
+                        (uint32_t(opts[i + 7]) << 16) |
+                        (uint32_t(opts[i + 8]) << 8) |
+                        uint32_t(opts[i + 9]);
+                hasTs = true;
+            }
             else if(kind == 5 && len >= 10 && (len - 2) % 8 == 0)
             {
                 std::size_t n = (len - 2) / 8;
@@ -99,6 +155,28 @@ namespace
             }
             i += len;
         }
+    }
+
+    std::vector<uint8_t> EncodeSackBlocks(
+        const std::vector<std::pair<uint32_t, uint32_t>> &blocks)
+    {
+        if(blocks.empty())
+            return {};
+        std::vector<uint8_t> o;
+        o.push_back(5);
+        o.push_back(uint8_t(2 + blocks.size() * 8));
+        for(const auto &b : blocks)
+        {
+            o.push_back(uint8_t(b.first >> 24));
+            o.push_back(uint8_t(b.first >> 16));
+            o.push_back(uint8_t(b.first >> 8));
+            o.push_back(uint8_t(b.first));
+            o.push_back(uint8_t(b.second >> 24));
+            o.push_back(uint8_t(b.second >> 16));
+            o.push_back(uint8_t(b.second >> 8));
+            o.push_back(uint8_t(b.second));
+        }
+        return o;
     }
 
     std::vector<uint8_t> BuildSackOption(
@@ -121,24 +199,43 @@ namespace
             if(blocks.size() >= 3)
                 break;
         }
-        if(blocks.empty())
-            return {};
+        return EncodeSackBlocks(blocks);
+    }
 
-        std::vector<uint8_t> o;
-        o.push_back(5);
-        o.push_back(uint8_t(2 + blocks.size() * 8));
-        for(const auto &b : blocks)
+    std::vector<uint8_t> BuildDsackOption(
+        const std::map<uint32_t, std::vector<uint8_t>> &ooo,
+        uint32_t left, uint32_t right)
+    {
+        std::vector<std::pair<uint32_t, uint32_t>> blocks;
+        blocks.push_back({ left, right });
+        for(const auto &kv : ooo)
         {
-            o.push_back(uint8_t(b.first >> 24));
-            o.push_back(uint8_t(b.first >> 16));
-            o.push_back(uint8_t(b.first >> 8));
-            o.push_back(uint8_t(b.first));
-            o.push_back(uint8_t(b.second >> 24));
-            o.push_back(uint8_t(b.second >> 16));
-            o.push_back(uint8_t(b.second >> 8));
-            o.push_back(uint8_t(b.second));
+            if(blocks.size() >= 3)
+                break;
+            uint32_t l = kv.first;
+            uint32_t r = l + uint32_t(kv.second.size());
+            if(l <= blocks.back().second)
+            {
+                if(r > blocks.back().second)
+                    blocks.back().second = r;
+            }
+            else
+            {
+                blocks.push_back({ l, r });
+            }
         }
-        return o;
+        return EncodeSackBlocks(blocks);
+    }
+
+    uint32_t MakeIsn(Ipv4 local, uint16_t lport, Ipv4 remote, uint16_t rport)
+    {
+        uint32_t h = 2166136261u;
+        h = (h ^ local.value) * 16777619u;
+        h = (h ^ remote.value) * 16777619u;
+        h = (h ^ uint32_t(lport)) * 16777619u;
+        h = (h ^ uint32_t(rport)) * 16777619u;
+        h ^= h >> 16;
+        return h ? h : 1;
     }
 }
 
@@ -152,11 +249,183 @@ static uint64_t TcpNow(Scheduler *s)
     return s ? s->Now() : 0;
 }
 
+void TcpConnection::UpdateRtt(double sample)
+{
+    if(!rttValid)
+    {
+        srtt = sample;
+        rttvar = sample / 2.0;
+        rttValid = true;
+    }
+    else
+    {
+        double diff = srtt > sample ? srtt - sample : sample - srtt;
+        rttvar = (3.0 * rttvar + diff) / 4.0;
+        srtt = (7.0 * srtt + sample) / 8.0;
+    }
+    double est = srtt + 4.0 * rttvar;
+    if(est < double(rtoMin)) est = double(rtoMin);
+    if(est > double(rtoMax)) est = double(rtoMax);
+    rto = uint64_t(est);
+}
+
+void TcpConnection::ScheduleDelayedAck()
+{
+    if(!scheduler)
+    {
+        FlushDelayedAck();
+        return;
+    }
+    ackPending = true;
+    ++ackGen;
+    scheduler->ScheduleAfter(kDelayedAckDelay,
+        std::make_unique<DelayedAckEvent>(this, ackGen));
+}
+
+void TcpConnection::OnDelayedAckEvent(uint64_t gen)
+{
+    if(gen != ackGen || !ackPending)
+        return;
+    FlushDelayedAck();
+}
+
+void TcpConnection::FlushDelayedAck()
+{
+    ackPending = false;
+    delayedAckSegs = 0;
+    ++ackGen;
+
+    std::vector<uint8_t> opt;
+    if(sackEnabled)
+        opt = BuildSackOption(ooo);
+    SendSeg(TcpSegment::kAck, sndNxt, rcvNxt, std::vector<uint8_t>(), false, opt);
+}
+
+void TcpConnection::ClearSackRetrans()
+{
+    for(auto it = sackRetrans.begin(); it != sackRetrans.end(); )
+    {
+        if(*it < sndUna)
+            it = sackRetrans.erase(it);
+        else
+            ++it;
+    }
+}
+
+void TcpConnection::RetransmitSackHole(
+    const std::vector<std::pair<uint32_t, uint32_t>> &sacks)
+{
+    uint32_t maxRight = 0;
+    for(const auto &b : sacks)
+        if(b.second > maxRight) maxRight = b.second;
+
+    uint32_t chosen = 0;
+    bool found = false;
+    for(const auto &kv : unacked)
+    {
+        if(kv.first < sndUna)
+            continue;
+        if(!sacks.empty() && kv.first >= maxRight)
+            break;
+
+        bool covered = false;
+        for(const auto &b : sacks)
+            if(kv.first >= b.first && kv.first < b.second)
+            {
+                covered = true;
+                break;
+            }
+        if(!covered && !sackRetrans.count(kv.first))
+        {
+            chosen = kv.first;
+            found = true;
+            break;
+        }
+    }
+
+    if(!found)
+        return;
+
+    auto it = unacked.find(chosen);
+    if(it == unacked.end())
+        return;
+
+    sackRetrans.insert(chosen);
+    ++retransmits;
+    ++totalRetransmits;
+    SendSeg(TcpSegment::kAck | TcpSegment::kPsh, it->first, rcvNxt,
+            it->second, true);
+    StartRto();
+}
+
+void TcpConnection::SetKeepalive(bool on, uint64_t idle, uint64_t interval,
+                                 uint8_t probes)
+{
+    keepaliveEnabled = on;
+    if(idle > 0) keepIdle = idle;
+    if(interval > 0) keepInterval = interval;
+    keepMaxProbes = probes;
+    keepProbes = 0;
+    lastActivity = TcpNow(scheduler);
+    ++keepGen;
+
+    if(on && state == Established && scheduler)
+        scheduler->ScheduleAfter(keepIdle,
+            std::make_unique<KeepaliveEvent>(this, keepGen));
+}
+
+void TcpConnection::OnKeepaliveEvent(uint64_t gen)
+{
+    if(gen != keepGen || !keepaliveEnabled || state != Established)
+        return;
+
+    uint64_t now = TcpNow(scheduler);
+    if(keepProbes == 0 && now - lastActivity < keepIdle)
+    {
+        scheduler->ScheduleAfter(keepIdle - (now - lastActivity),
+            std::make_unique<KeepaliveEvent>(this, keepGen));
+        return;
+    }
+
+    if(keepProbes < keepMaxProbes)
+    {
+        ++keepProbes;
+        uint32_t seq = sndNxt > 0 ? sndNxt - 1 : 0;
+        SendSeg(TcpSegment::kAck, seq, rcvNxt, std::vector<uint8_t>(), false);
+        scheduler->ScheduleAfter(keepInterval,
+            std::make_unique<KeepaliveEvent>(this, keepGen));
+        return;
+    }
+
+    if(onKeepaliveTimeout) onKeepaliveTimeout();
+    Abort();
+}
+
 void TcpConnection::Listen(Ipv4 local, uint16_t lport)
 {
     localIp = local;
     localPort = lport;
     state = Listening;
+}
+
+void TcpConnection::OpenPassiveCookie(Ipv4 local, uint16_t lport, Ipv4 remote,
+                                      uint16_t rport, uint32_t clientIsn,
+                                      uint32_t serverIsn)
+{
+    localIp = local;
+    localPort = lport;
+    remoteIp = remote;
+    remotePort = rport;
+    irs = clientIsn;
+    rcvNxt = clientIsn + 1;
+    iss = serverIsn;
+    sndUna = iss;
+    sndNxt = iss + 1;
+    cwnd = mss;
+    ssthresh = 65535;
+    sndWnd = 8192;
+    dupAcks = 0;
+    state = SynRcvd;
 }
 
 void TcpConnection::OpenActive(Ipv4 local, uint16_t lport, Ipv4 remote,
@@ -166,7 +435,7 @@ void TcpConnection::OpenActive(Ipv4 local, uint16_t lport, Ipv4 remote,
     localPort = lport;
     remoteIp = remote;
     remotePort = rport;
-    iss = isn;
+    iss = isn ? isn : MakeIsn(local, lport, remote, rport);
     sndUna = iss;
     sndNxt = iss + 1;
     cwnd = mss;
@@ -201,12 +470,35 @@ void TcpConnection::SendSeg(uint8_t flags, uint32_t seq, uint32_t ack,
         uint32_t scaled = win >> rcvWscale;
         s.window = uint16_t(scaled > 65535 ? 65535 : scaled);
     }
+    uint32_t tv = uint32_t(TcpNow(scheduler));
     if(flags & TcpSegment::kSyn)
-        s.options = BuildSynOptions(uint16_t(mss), rcvWscale);
+        s.options = BuildSynOptions(uint16_t(mss), rcvWscale, tv, tsRecent);
     else
+    {
         s.options = options;
+        if(tsEnabled)
+        {
+            std::vector<uint8_t> ts = BuildTimestampOption(tv, tsRecent);
+            s.options.insert(s.options.end(), ts.begin(), ts.end());
+        }
+    }
     s.payload = payload;
     out(s);
+
+    if(!payload.empty() || (flags & (TcpSegment::kSyn | TcpSegment::kFin)))
+    {
+        lastActivity = TcpNow(scheduler);
+        keepProbes = 0;
+        tsSent[tv] = lastActivity;
+        if(tsSent.size() > 64)
+            tsSent.erase(tsSent.begin());
+    }
+    if((flags & TcpSegment::kAck) && !payload.empty())
+    {
+        ackPending = false;
+        delayedAckSegs = 0;
+        ++ackGen;
+    }
 
     if(track)
     {
@@ -307,12 +599,7 @@ void TcpConnection::DrainOoo()
         progressed = true;
     }
     if(progressed)
-    {
-        std::vector<uint8_t> opt;
-        if(sackEnabled)
-            opt = BuildSackOption(ooo);
-        SendSeg(TcpSegment::kAck, sndNxt, rcvNxt, std::vector<uint8_t>(), false, opt);
-    }
+        FlushDelayedAck();
 }
 
 void TcpConnection::EnterTimeWait()
@@ -341,8 +628,12 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
     bool hasMss = false;
     bool hasWs = false;
     bool hasSack = false;
+    bool hasTs = false;
+    uint32_t tsVal = 0;
+    uint32_t tsEcr = 0;
     std::vector<std::pair<uint32_t, uint32_t>> sacks;
-    ParseTcpOptions(seg.options, pmss, pwscale, hasMss, hasWs, hasSack, sacks);
+    ParseTcpOptions(seg.options, pmss, pwscale, hasMss, hasWs, hasSack,
+                    hasTs, tsVal, tsEcr, sacks);
     if(hasMss)
     {
         if(pmss < 536) pmss = 536;
@@ -357,11 +648,46 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
     }
     if(syn && hasSack)
         sackEnabled = true;
+    if(hasTs)
+    {
+        if(syn)
+        {
+            tsEnabled = true;
+            tsRecent = tsVal;
+        }
+        else if(tsEnabled && !(flags & TcpSegment::kRst))
+        {
+            int32_t delta = int32_t(tsVal - tsRecent);
+            if(delta < 0)
+                return;
+            if(delta > 0)
+                tsRecent = tsVal;
+        }
+    }
 
     if(flags & TcpSegment::kRst)
     {
-        if(state != Listening)
+        bool ok = false;
+        if(state == SynSent)
+            ok = ack && seg.ack == sndNxt;
+        else if(state != Listening)
+            ok = seg.seq >= rcvNxt &&
+                 (uint32_t(seg.seq - rcvNxt) < (rcvWnd ? rcvWnd : 1));
+        if(ok)
+        {
+            if(onReset) onReset();
             Abort();
+        }
+        return;
+    }
+
+    lastActivity = TcpNow(scheduler);
+    keepProbes = 0;
+
+    if(state == Established && seg.payload.empty() && (flags & TcpSegment::kAck) &&
+       !syn && !fin && rcvNxt > 0 && seg.seq == rcvNxt - 1)
+    {
+        SendSeg(TcpSegment::kAck, sndNxt, rcvNxt, std::vector<uint8_t>(), false);
         return;
     }
 
@@ -373,7 +699,7 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
             remotePort = seg.srcPort;
             irs = seg.seq;
             rcvNxt = irs + 1;
-            iss = 2000;
+            iss = MakeIsn(localIp, localPort, remoteIp, remotePort);
             sndUna = iss;
             sndNxt = iss + 1;
             cwnd = mss;
@@ -399,6 +725,25 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
             state = Established;
             SendSeg(TcpSegment::kAck, sndNxt, rcvNxt, std::vector<uint8_t>(), false);
             if(onConnected) onConnected();
+            if(keepaliveEnabled && scheduler)
+            {
+                lastActivity = TcpNow(scheduler);
+                ++keepGen;
+                scheduler->ScheduleAfter(keepIdle,
+                    std::make_unique<KeepaliveEvent>(this, keepGen));
+            }
+        }
+        else if(syn && !ack)
+        {
+            irs = seg.seq;
+            rcvNxt = irs + 1;
+            sndWnd = seg.window;
+            if(wsEnabled)
+                sndWnd = uint32_t(seg.window) << peerWscale;
+            state = SynRcvd;
+            SendSeg(TcpSegment::kSyn | TcpSegment::kAck, iss, rcvNxt,
+                    std::vector<uint8_t>(), true);
+            StartRto();
         }
         return;
     }
@@ -411,6 +756,13 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
             CancelRto();
             state = Established;
             if(onConnected) onConnected();
+            if(keepaliveEnabled && scheduler)
+            {
+                lastActivity = TcpNow(scheduler);
+                ++keepGen;
+                scheduler->ScheduleAfter(keepIdle,
+                    std::make_unique<KeepaliveEvent>(this, keepGen));
+            }
         }
         return;
     }
@@ -424,37 +776,48 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
 
     if(ack)
     {
+        if(sackEnabled && !sacks.empty() && sacks[0].first < sacks[0].second &&
+           sacks[0].second <= seg.ack)
+        {
+            ++dsacks;
+            if(inRecovery && cwndBeforeRecovery > cwnd)
+            {
+                cwnd = cwndBeforeRecovery;
+                inRecovery = false;
+                sackRetrans.clear();
+            }
+        }
+
+        sndWnd = seg.window;
+        if(wsEnabled)
+            sndWnd = uint32_t(seg.window) << peerWscale;
+
         if(seg.ack > sndUna)
         {
             uint32_t acked = seg.ack - sndUna;
+            bool wasRecovery = inRecovery;
             sndUna = seg.ack;
             backoff = 0;
             retransmits = 0;
             dupAcks = 0;
-            sndWnd = seg.window;
-            if(wsEnabled)
-                sndWnd = uint32_t(seg.window) << peerWscale;
 
-            if(rttTiming)
+            bool sampled = false;
+            if(hasTs && tsEcr != 0)
+            {
+                auto tsit = tsSent.find(tsEcr);
+                if(tsit != tsSent.end())
+                {
+                    uint64_t now = TcpNow(scheduler);
+                    UpdateRtt(double(now - tsit->second));
+                    tsSent.erase(tsit);
+                    rttTiming = false;
+                    sampled = true;
+                }
+            }
+            if(!sampled && rttTiming)
             {
                 uint64_t now = TcpNow(scheduler);
-                double sample = double(now - rttStart);
-                if(!rttValid)
-                {
-                    srtt = sample;
-                    rttvar = sample / 2.0;
-                    rttValid = true;
-                }
-                else
-                {
-                    double diff = srtt > sample ? srtt - sample : sample - srtt;
-                    rttvar = (3.0 * rttvar + diff) / 4.0;
-                    srtt = (7.0 * srtt + sample) / 8.0;
-                }
-                double est = srtt + 4.0 * rttvar;
-                if(est < double(rtoMin)) est = double(rtoMin);
-                if(est > double(rtoMax)) est = double(rtoMax);
-                rto = uint64_t(est);
+                UpdateRtt(double(now - rttStart));
                 rttTiming = false;
             }
 
@@ -482,6 +845,22 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
                 }
             }
             unacked.swap(keep);
+            ClearSackRetrans();
+
+            if(wasRecovery)
+            {
+                if(sndUna >= recover)
+                {
+                    inRecovery = false;
+                    sackRetrans.clear();
+                    cwnd = ssthresh;
+                }
+                else
+                {
+                    cwnd = ssthresh + 3 * mss;
+                    RetransmitSackHole(sacks);
+                }
+            }
 
             if(sendOff == sendBuf.size() && sndUna == sndNxt)
             {
@@ -511,49 +890,33 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
             ++dupAcks;
             if(dupAcks == 3)
             {
-                ssthresh = cwnd / 2;
-                if(ssthresh < 2 * mss) ssthresh = 2 * mss;
-                cwnd = ssthresh;
-
-                uint32_t rseq = sndUna;
-                if(!sacks.empty())
+                if(!inRecovery || sndUna >= recover)
                 {
-                    uint32_t maxRight = 0;
-                    for(const auto &b : sacks)
-                        if(b.second > maxRight) maxRight = b.second;
-
-                    for(const auto &kv : unacked)
-                    {
-                        if(kv.first >= maxRight)
-                            break;
-                        bool covered = false;
-                        for(const auto &b : sacks)
-                            if(kv.first >= b.first && kv.first < b.second)
-                            {
-                                covered = true;
-                                break;
-                            }
-                        if(!covered)
-                        {
-                            rseq = kv.first;
-                            break;
-                        }
-                    }
+                    inRecovery = true;
+                    recover = sndNxt;
+                    cwndBeforeRecovery = cwnd;
+                    ssthresh = cwnd / 2;
+                    if(ssthresh < 2 * mss) ssthresh = 2 * mss;
+                    cwnd = ssthresh + 3 * mss;
+                    sackRetrans.clear();
                 }
-
-                auto it = unacked.find(rseq);
-                if(it == unacked.end()) it = unacked.lower_bound(rseq);
-                if(it != unacked.end())
+                else
                 {
-                    ++retransmits;
-                    ++totalRetransmits;
-                    SendSeg(TcpSegment::kAck | TcpSegment::kPsh,
-                            it->first, rcvNxt, it->second, true);
-                    StartRto();
+                    cwnd += mss;
                 }
-                dupAcks = 0;
+                RetransmitSackHole(sacks);
+            }
+            else if(dupAcks > 3 && inRecovery)
+            {
+                cwnd += mss;
+                RetransmitSackHole(sacks);
             }
         }
+
+        if(sndWnd == 0 && sendOff < sendBuf.size())
+            StartRto();
+        else if(sndWnd > 0 && sendOff < sendBuf.size())
+            Pump();
     }
 
     if(!seg.payload.empty())
@@ -562,26 +925,35 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
         {
             Deliver(seg.payload);
             rcvNxt += uint32_t(seg.payload.size());
-            std::vector<uint8_t> opt;
-            if(sackEnabled)
-                opt = BuildSackOption(ooo);
-            SendSeg(TcpSegment::kAck, sndNxt, rcvNxt, std::vector<uint8_t>(), false, opt);
+            ++delayedAckSegs;
+            if(delayedAckSegs >= 2 || !ooo.empty())
+                FlushDelayedAck();
+            else
+                ScheduleDelayedAck();
             DrainOoo();
         }
         else if(seg.seq > rcvNxt)
         {
             ooo[seg.seq] = seg.payload;
-            std::vector<uint8_t> opt;
-            if(sackEnabled)
-                opt = BuildSackOption(ooo);
-            SendSeg(TcpSegment::kAck, sndNxt, rcvNxt, std::vector<uint8_t>(), false, opt);
+            FlushDelayedAck();
         }
         else
         {
-            std::vector<uint8_t> opt;
-            if(sackEnabled)
-                opt = BuildSackOption(ooo);
-            SendSeg(TcpSegment::kAck, sndNxt, rcvNxt, std::vector<uint8_t>(), false, opt);
+            if(sackEnabled && seg.seq < rcvNxt)
+            {
+                uint32_t right = seg.seq + uint32_t(seg.payload.size());
+                if(right > rcvNxt) right = rcvNxt;
+                std::vector<uint8_t> opt = BuildDsackOption(ooo, seg.seq, right);
+                ackPending = false;
+                delayedAckSegs = 0;
+                ++ackGen;
+                SendSeg(TcpSegment::kAck, sndNxt, rcvNxt,
+                        std::vector<uint8_t>(), false, opt);
+            }
+            else
+            {
+                FlushDelayedAck();
+            }
         }
     }
 
@@ -590,7 +962,7 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
         if(seg.seq + uint32_t(seg.payload.size()) == rcvNxt)
         {
             rcvNxt += 1;
-            SendSeg(TcpSegment::kAck, sndNxt, rcvNxt, std::vector<uint8_t>(), false);
+            FlushDelayedAck();
 
             if(state == Established) state = CloseWait;
             else if(state == FinWait1)
@@ -616,6 +988,8 @@ void TcpConnection::Pump()
         if(inFlight >= limit) break;
 
         uint32_t avail = limit - inFlight;
+        if(nagle && !unacked.empty() && (sendBuf.size() - sendOff) < mss)
+            break;
         uint32_t n = mss;
         if(n > avail) n = avail;
         if(n > sendBuf.size() - sendOff) n = uint32_t(sendBuf.size() - sendOff);
@@ -644,6 +1018,8 @@ void TcpConnection::SendData(const std::vector<uint8_t> &data)
     if(state != Established && state != CloseWait) return;
     sendBuf.insert(sendBuf.end(), data.begin(), data.end());
     Pump();
+    if(sndWnd == 0 && sendOff < sendBuf.size())
+        StartRto();
 }
 
 void TcpConnection::Close()

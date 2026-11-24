@@ -3,10 +3,12 @@ set -e
 cd "$(dirname "$0")/.." || exit 1
 
 THRESHOLD="${COVERAGE_MIN:-54}"
+COV="${COV_BUILD:-build/cov}"
+EXE="$COV/netsim"
 
-make clean >/dev/null 2>&1
+rm -rf "$COV"
 JOBS="${JOBS:-4}"
-if ! make COVERAGE=1 -j"$JOBS" >/tmp/yn_cov_build.log 2>&1; then
+if ! make BUILD="$COV" TARGET="$EXE" COVERAGE=1 -j"$JOBS" >/tmp/yn_cov_build.log 2>&1; then
     echo "coverage: build failed"
     tail -20 /tmp/yn_cov_build.log
     exit 1
@@ -14,24 +16,24 @@ fi
 
 run() {
     [ -e "$1" ] || return 0
-    timeout 30 ./netsim "$1" >/dev/null 2>&1 || true
+    timeout 30 "$EXE" "$1" >/dev/null 2>&1 || true
 }
 
 for t in tests/*.txt tests/*.lua tests/config.yn; do
     run "$t"
 done
-printf 'demo\nstate\nquit\n' | timeout 30 ./netsim >/dev/null 2>&1 || true
+printf 'demo\nstate\nquit\n' | timeout 30 "$EXE" >/dev/null 2>&1 || true
 bash tests/cli_test.sh >/dev/null 2>&1 || true
-./netsim --json tests/auto_ping.txt >/dev/null 2>&1 || true
-./netsim --log /tmp/yn_cov_log.jsonl tests/auto_ping.txt >/dev/null 2>&1 || true
+"$EXE" --json tests/auto_ping.txt >/dev/null 2>&1 || true
+"$EXE" --log /tmp/yn_cov_log.jsonl tests/auto_ping.txt >/dev/null 2>&1 || true
 
-mkdir -p build
+mkdir -p "$COV"
 if g++ -std=c++17 -O0 -g --coverage -I. \
         tests/unit/unit_tests.cpp \
-        build/obj/core/*.o build/obj/device/*.o build/obj/link/*.o \
-        build/obj/engine/*.o build/obj/topo/*.o build/obj/netstack/*.o \
-        -o build/cov_unit --coverage -lm >/tmp/yn_cov_unit.log 2>&1; then
-    ./build/cov_unit >/dev/null 2>&1 || true
+        "$COV"/obj/core/*.o "$COV"/obj/device/*.o "$COV"/obj/link/*.o \
+        "$COV"/obj/engine/*.o "$COV"/obj/topo/*.o "$COV"/obj/netstack/*.o \
+        -o "$COV"/cov_unit --coverage -lm >/tmp/yn_cov_unit.log 2>&1; then
+    ./"$COV"/cov_unit >/dev/null 2>&1 || true
 else
     echo "coverage: unit binary build failed"
     tail -15 /tmp/yn_cov_unit.log
@@ -40,7 +42,7 @@ else
 fi
 
 rm -f ./*.gcov
-gcov build/obj/core/*.gcno build/obj/device/*.gcno build/obj/link/*.gcno build/obj/engine/*.gcno build/obj/topo/*.gcno build/obj/netstack/*.gcno >/tmp/yn_gcov.txt 2>&1 || true
+( cd "$COV" && gcov obj/core/*.gcno obj/device/*.gcno obj/link/*.gcno obj/engine/*.gcno obj/topo/*.gcno obj/netstack/*.gcno ) >/tmp/yn_gcov.txt 2>&1 || true
 
 awk -v THRESH="$THRESHOLD" '
   /Lines executed:/ {
@@ -56,5 +58,4 @@ awk -v THRESH="$THRESHOLD" '
 ' /tmp/yn_gcov.txt
 
 rc=$?
-make clean >/dev/null 2>&1
 exit "$rc"

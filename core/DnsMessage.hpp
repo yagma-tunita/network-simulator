@@ -19,6 +19,7 @@ struct DnsAnswer
     uint16_t cls = 1;
     uint32_t ttl = 60;
     Ipv4 ip;
+    std::string target;
 };
 
 struct DnsMessage

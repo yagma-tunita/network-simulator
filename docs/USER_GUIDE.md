@@ -91,10 +91,15 @@ udp-echo   <device> on|off [port]
 udp-send   <device> <ip> <dport> <text...>
 tcp-listen <device> on|off [port]
 tcp-connect <device> <ip> <port> [text...]
+tcp-keepalive <device> on [idle interval count]|off
+tcp-status <device>
+tcp-backlog <device> <1-1024>
 dhcp-server <device> on <start> <end> <prefix> <gateway> [dns] | off
 dhcp-client <device> [port-index]
+dhcp-relay  <router> <dev:idx> <server-ip>|off
 dns-server <device> on|off
 dns-record <device> <name> <ip>
+dns-cname  <device> <alias> <target>
 dns-query <device> [server-ip] <name>
 nat        <router> on <inside-dev:idx> <outside-dev:idx> | off
 nat-port   <router> tcp|udp <public-port> <inside-ip> <inside-port>
@@ -103,7 +108,12 @@ rip        <router> on|off
 rip-status <router>
 ospf       <router> on|off
 ospf-status <router>
-ospf-auth  <router> none|simple <password>
+ospf-auth  <router> none|simple <password>|md5|sha1|sha256 <key-id> <key>
+ospf-cost  <router> <dev:idx> <1-65535>
+ospf-passive <router> <dev:idx> on|off
+ospf-external <router> <ip/prefix> [metric]
+ospf-area  <router> <dev:idx> <area-id>
+ospf-area-type <router> <area-id> stub|nssa|normal
 tcp-lite-echo   <device> on|off [port]
 tcp-lite-echo-client <device> <ip> <port> <text...>
 acl        <router> in|out allow|deny <src/p> <dst/p> <proto|any>
@@ -158,7 +168,12 @@ transport and are **not** TCP. DHCP/DNS: on a server host use
 `dhcp-server SRV on 10.0.0.100 10.0.0.110 24 10.0.0.1 10.0.0.1`,
 `dns-server SRV on`, and `dns-record SRV example.com 10.0.0.1`. A host with an
 unconfigured port runs `dhcp-client PC1 0`, then `dns-query PC1 example.com`
-uses the DNS server supplied by DHCP. NAT: on the router, mark the LAN and WAN
+uses the DNS server supplied by DHCP. For a server on another subnet, attach a
+relay to the client-facing router port: `dhcp-relay R1 R1:0 10.1.0.2`. DNS
+supports multiple A records and CNAMEs (`dns-cname SRV www.example.com example.com`).
+Leases are renewed by unicast at 50% of the lease and rebind by broadcast at
+87.5%; if both fail the address expires and the port loses its IP.
+NAT: on the router, mark the LAN and WAN
 ports with `nat R1 on R1:0 R1:1`; inside hosts are translated to the WAN address,
 and `nat-port R1 tcp 8080 192.168.1.1 80` forwards a public port to an inside
 host. `nat-table R1` shows mappings. TCP, UDP and ICMP echo are supported
@@ -166,8 +181,18 @@ host. `nat-table R1` shows mappings. TCP, UDP and ICMP echo are supported
 routers, `run` to exchange updates, then `rip-status R1` shows learned routes
 with metric and next hop. OSPF: enable `ospf R1 on` on connected routers and
 `run`; `ospf-status R1` shows interfaces, DR/BDR, neighbors, LSDB size and SPF
-routes. `ospf-auth R1 simple secret` enables 8-byte simple-password auth (both
-ends must match; MD5 is not implemented yet). Link reliability tests: `set-link PC1:0 loss 100`
+routes. `ospf-auth R1 simple secret` enables 8-byte simple-password auth;
+`ospf-auth R1 md5 7 0123456789abcdef` enables MD5 auth with a 16-byte key;
+`sha1`/`sha256` use the same syntax with a 1–64 byte key. Both ends must match. `ospf-cost R1 R1:1 5` changes interface cost; 
+`ospf-passive R1 R1:0 on` suppresses Hellos and advertises the interface as a
+stub. `ospf-area R1 R1:0 0.0.0.1` assigns an interface area; a router with
+interfaces in multiple areas becomes an ABR and originates Type 3 summaries.
+`ospf-external R2 172.16.0.0/16 20` injects a Type 5 external route;
+`ospf-external R2 clear` withdraws it.
+`ospf-area-type R1 0.0.0.1 stub` marks an area stub; its ABR advertises a
+default summary and external LSAs are suppressed there. `nssa` allows Type 7
+external LSAs inside the area and the ABR translates them to Type 5 outside.
+Link reliability tests: `set-link PC1:0 loss 100`
 drops everything (ping times out); `set-link PC1:0 clear` restores it.
 ACLs: `acl R1 in deny 10.0.0.0/24 10.0.1.0/24 icmp` blocks matching transit
 traffic. `help <command>` prints one command's usage.

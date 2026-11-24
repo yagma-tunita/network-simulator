@@ -16,7 +16,7 @@ try {
     Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-    $srcDirs = @('core','device','link','engine','topo','netstack','app','script','win','tests','docs','examples','third_party','packaging','.github')
+    $srcDirs = @('core','device','link','engine','topo','netstack','app','script','win','tests','docs','examples','third_party','packaging','tools','.github')
     foreach ($d in $srcDirs) {
         $p = Join-Path $root $d
         if (Test-Path $p) { Copy-Item -Recurse -Force $p (Join-Path $stage $d) }

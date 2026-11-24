@@ -75,6 +75,24 @@ namespace
         }
     }
 
+    const char *TcpStateName(int s)
+    {
+        switch(s)
+        {
+        case TcpConnection::Listening: return "Listening";
+        case TcpConnection::SynSent: return "SynSent";
+        case TcpConnection::SynRcvd: return "SynRcvd";
+        case TcpConnection::Established: return "Established";
+        case TcpConnection::FinWait1: return "FinWait1";
+        case TcpConnection::FinWait2: return "FinWait2";
+        case TcpConnection::CloseWait: return "CloseWait";
+        case TcpConnection::Closing: return "Closing";
+        case TcpConnection::LastAck: return "LastAck";
+        case TcpConnection::TimeWait: return "TimeWait";
+        default: return "Closed";
+        }
+    }
+
     const char *PortState(const Port *p)
     {        const Switch *sw = dynamic_cast<const Switch *>(p->owner);
         if(!sw || !sw->stpEnabled) return "up";
@@ -727,6 +745,75 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
             throw std::invalid_argument("tcp-listen on requires a port");
         e->SetTcpListen(t[2] == "on", uint16_t(port));
     }
+    else if (cmd == "tcp-keepalive")
+    {
+        if (t.size() != 3 && t.size() != 6)
+            throw std::invalid_argument("tcp-keepalive <device> on [idle interval count]|off");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        if (t[2] != "on" && t[2] != "off")
+            throw std::invalid_argument("tcp-keepalive <device> on|off");
+        if (t[2] == "off")
+        {
+            if (t.size() != 3)
+                throw std::invalid_argument("tcp-keepalive <device> off");
+            e->SetTcpKeepalive(false);
+            return;
+        }
+        uint64_t idle = 300, interval = 75;
+        uint8_t count = 3;
+        if (t.size() == 6)
+        {
+            idle = std::stoull(t[3]);
+            interval = std::stoull(t[4]);
+            unsigned c = std::stoul(t[5]);
+            if (idle == 0 || interval == 0 || c == 0 || c > 255)
+                throw std::invalid_argument("tcp-keepalive parameters out of range");
+            count = uint8_t(c);
+        }
+        e->SetTcpKeepalive(true, idle, interval, count);
+    }
+    else if (cmd == "tcp-backlog")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("tcp-backlog <device> <1-1024>");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        unsigned n = std::stoul(t[2]);
+        if (n < 1 || n > 1024)
+            throw std::invalid_argument("tcp-backlog must be 1..1024");
+        e->tcpBacklog = n;
+    }
+    else if (cmd == "tcp-status")
+    {
+        if (t.size() != 2)
+            throw std::invalid_argument("tcp-status <device>");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+
+        std::cout << "tcp " << t[1] << ": conns=" << e->tcpConns.size()
+                  << " accepted=" << e->tcpAccepted
+                  << " dropped=" << e->tcpDropped
+                  << " resets=" << e->tcpResetsSent
+                  << " backlog=" << e->tcpBacklog
+                  << " cookies=" << e->tcpCookiesAccepted
+                  << "/" << e->tcpCookiesSent
+                  << " keepalive=" << (e->tcpKeepalive ? "on" : "off")
+                  << "\n";
+        for (const TcpConnection &c : e->tcpConns)
+            std::cout << "  conn " << c.localPort
+                      << " -> " << c.remoteIp.ToString() << ":" << c.remotePort
+                      << " state=" << TcpStateName(c.state)
+                      << " rto=" << c.rto
+                      << " cwnd=" << c.cwnd
+                      << " wnd=" << c.sndWnd
+                      << " unacked=" << c.unacked.size()
+                      << " retrans=" << c.totalRetransmits
+                      << " dsack=" << c.dsacks << "\n";
+    }
     else if (cmd == "tcp-connect")
     {
         if (t.size() < 4)
@@ -787,6 +874,24 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
             throw std::invalid_argument("dhcp-client port index out of range");
         e->StartDhcpClient(e->portList[idx]);
     }
+    else if (cmd == "dhcp-relay")
+    {
+        if (t.size() != 4)
+            throw std::invalid_argument("dhcp-relay <router> <dev:idx> <server-ip>|off");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        auto ref = ParsePortRef(t[2]);
+        if (ref.first != t[1] || ref.second >= r->portList.size())
+            throw std::invalid_argument("dhcp-relay port must belong to the router");
+        Port *p = r->portList[ref.second];
+        if (t[3] == "off")
+        {
+            r->SetDhcpRelay(p, false, Ipv4::Any());
+            return;
+        }
+        r->SetDhcpRelay(p, true, Ipv4(t[3]));
+    }
     else if (cmd == "dns-server")
     {
         if (t.size() != 3)
@@ -806,6 +911,15 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
         if (!e)
             throw std::invalid_argument("'" + t[1] + "' is not an end device");
         e->AddDnsRecord(t[2], Ipv4(t[3]));
+    }
+    else if (cmd == "dns-cname")
+    {
+        if (t.size() != 4)
+            throw std::invalid_argument("dns-cname <device> <alias> <target>");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        e->AddDnsCname(t[2], t[3]);
     }
     else if (cmd == "dns-query")
     {
@@ -960,15 +1074,40 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
         std::cout << "ospf " << t[1] << ": "
                   << (r->ospfEnabled ? "on" : "off");
         if (r->ospfEnabled)
+        {
+            std::map<uint32_t, bool> areas;
+            std::size_t lsdb = 0;
+            std::size_t neighbors = 0;
+            std::size_t extRoutes = 0;
+            for (const auto &ifc : r->ospfIfaces)
+            {
+                areas[ifc.area.value] = true;
+                neighbors += ifc.neighbors.size();
+            }
+            for (const auto &kv : r->ospfLsdb)
+            {
+                areas[kv.first] = true;
+                lsdb += kv.second.size();
+            }
+            for (const Route &rt : r->routeTable)
+                if (rt.external)
+                    ++extRoutes;
             std::cout << " id=" << Ipv4(r->ospfRouterId).ToString()
-                      << " area=" << r->ospfAreaId.ToString()
-                      << " lsdb=" << r->ospfLsdb.size();
+                      << " areas=" << areas.size()
+                      << " neighbors=" << neighbors
+                      << " lsdb=" << lsdb
+                      << " external=" << r->ospfExternalLsdb.size()
+                      << " extroutes=" << extRoutes;
+        }
         std::cout << "\n";
 
         for (const auto &ifc : r->ospfIfaces)
         {
             std::cout << "  iface " << ifc.port->ip.ToString()
+                      << " area=" << ifc.area.ToString()
                       << " state=" << OspfIfName(ifc.state)
+                      << " cost=" << ifc.cost
+                      << " passive=" << (ifc.passive ? "on" : "off")
                       << " dr=" << ifc.dr.ToString()
                       << " bdr=" << ifc.bdr.ToString() << "\n";
             for (const auto &kv : ifc.neighbors)
@@ -985,8 +1124,8 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
     }
     else if (cmd == "ospf-auth")
     {
-        if (t.size() != 3 && t.size() != 4)
-            throw std::invalid_argument("ospf-auth <router> none|simple <password>");
+        if (t.size() < 3 || t.size() > 5)
+            throw std::invalid_argument("ospf-auth <router> none|simple <password>|md5|sha1|sha256 <key-id> <key>");
         Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
         if (!r)
             throw std::invalid_argument("'" + t[1] + "' is not a router");
@@ -995,15 +1134,154 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
             r->ospfAuthType = OspfPacket::AuthNone;
             for (std::size_t i = 0; i < 8; ++i)
                 r->ospfPassword[i] = 0;
+            r->ospfKey.clear();
+            r->ospfDigestAlg = 0;
+            return;
+        }
+        if (t[2] == "md5" || t[2] == "sha1" || t[2] == "sha256")
+        {
+            if (t.size() != 5)
+                throw std::invalid_argument("ospf-auth <router> md5|sha1|sha256 <key-id> <key>");
+            unsigned id = std::stoul(t[3]);
+            if (id == 0 || id > 255)
+                throw std::invalid_argument("ospf crypto key id must be 1..255");
+            uint8_t alg = 0;
+            if (t[2] == "sha1") alg = 1;
+            else if (t[2] == "sha256") alg = 2;
+            if (alg == 0 && t[4].size() != 16)
+                throw std::invalid_argument("ospf MD5 key must be exactly 16 bytes");
+            if (alg != 0 && (t[4].empty() || t[4].size() > 64))
+                throw std::invalid_argument("ospf SHA key must be 1..64 bytes");
+            r->ospfAuthType = OspfPacket::AuthMd5;
+            r->ospfDigestAlg = alg;
+            r->ospfKeyId = uint8_t(id);
+            r->ospfKey = t[4];
+            r->ospfCryptoSeq = 0;
             return;
         }
         if (t[2] != "simple" || t.size() != 4)
-            throw std::invalid_argument("ospf-auth <router> none|simple <password>");
+            throw std::invalid_argument("ospf-auth <router> none|simple <password>|md5|sha1|sha256 <key-id> <key>");
         if (t[3].size() > 8)
             throw std::invalid_argument("ospf simple password must be at most 8 bytes");
         r->ospfAuthType = OspfPacket::AuthSimple;
+        r->ospfDigestAlg = 0;
         for (std::size_t i = 0; i < 8; ++i)
             r->ospfPassword[i] = i < t[3].size() ? uint8_t(t[3][i]) : 0;
+    }
+    else if (cmd == "ospf-area")
+    {
+        if (t.size() != 4)
+            throw std::invalid_argument("ospf-area <router> <dev:idx> <area-id>");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        auto ref = ParsePortRef(t[2]);
+        if (ref.first != t[1] || ref.second >= r->portList.size())
+            throw std::invalid_argument("ospf-area port must belong to the router");
+        Ipv4 area(t[3]);
+        Port *p = r->portList[ref.second];
+        r->ospfAreaCfg[p] = area;
+        for (auto &ifc : r->ospfIfaces)
+        {
+            if (ifc.port != p)
+                continue;
+            ifc.area = area;
+            ifc.neighbors.clear();
+            ifc.state = Router::OspfIfWaiting;
+            ifc.waitUntil = 0;
+            ifc.dr = Ipv4::Any();
+            ifc.bdr = Ipv4::Any();
+            ifc.drIp = Ipv4::Any();
+            ifc.bdrIp = Ipv4::Any();
+        }
+    }
+    else if (cmd == "ospf-area-type")
+    {
+        if (t.size() != 4)
+            throw std::invalid_argument("ospf-area-type <router> <area-id> stub|nssa|normal");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        Ipv4 area(t[2]);
+        if (t[3] != "stub" && t[3] != "nssa" && t[3] != "normal")
+            throw std::invalid_argument("ospf-area-type <router> <area-id> stub|nssa|normal");
+        r->ospfStubAreas[area.value] = (t[3] == "stub");
+        r->ospfNssaAreas[area.value] = (t[3] == "nssa");
+    }
+    else if (cmd == "ospf-external")
+    {
+        if (t.size() != 3 && t.size() != 4)
+            throw std::invalid_argument("ospf-external <router> <ip/prefix> [metric]");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        if (t.size() == 3 && t[2] == "clear")
+        {
+            r->ospfExternals.clear();
+            return;
+        }
+        Ipv4Subnet dst(t[2]);
+        unsigned metric = 20;
+        if (t.size() == 4)
+            metric = std::stoul(t[3]);
+        if (metric == 0 || metric > 0xFFFFFFu)
+            throw std::invalid_argument("ospf external metric out of range");
+        r->AddOspfExternal(dst, metric);
+    }
+    else if (cmd == "ospf-cost")
+    {
+        if (t.size() != 4)
+            throw std::invalid_argument("ospf-cost <router> <dev:idx> <1-65535>");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        auto ref = ParsePortRef(t[2]);
+        if (ref.first != t[1] || ref.second >= r->portList.size())
+            throw std::invalid_argument("ospf-cost port must belong to the router");
+        unsigned cost = std::stoul(t[3]);
+        if (cost == 0 || cost > 65535)
+            throw std::invalid_argument("ospf cost must be 1..65535");
+        Port *p = r->portList[ref.second];
+        r->ospfCostCfg[p] = uint16_t(cost);
+        for (auto &ifc : r->ospfIfaces)
+            if (ifc.port == p)
+                ifc.cost = uint16_t(cost);
+    }
+    else if (cmd == "ospf-passive")
+    {
+        if (t.size() != 4)
+            throw std::invalid_argument("ospf-passive <router> <dev:idx> on|off");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        auto ref = ParsePortRef(t[2]);
+        if (ref.first != t[1] || ref.second >= r->portList.size())
+            throw std::invalid_argument("ospf-passive port must belong to the router");
+        if (t[3] != "on" && t[3] != "off")
+            throw std::invalid_argument("ospf-passive <router> <dev:idx> on|off");
+        bool on = t[3] == "on";
+        Port *p = r->portList[ref.second];
+        r->ospfPassiveCfg[p] = on;
+        for (auto &ifc : r->ospfIfaces)
+        {
+            if (ifc.port != p)
+                continue;
+            ifc.passive = on;
+            if (on)
+            {
+                ifc.neighbors.clear();
+                ifc.state = Router::OspfIfDrOther;
+                ifc.dr = Ipv4::Any();
+                ifc.bdr = Ipv4::Any();
+                ifc.drIp = Ipv4::Any();
+                ifc.bdrIp = Ipv4::Any();
+            }
+            else
+            {
+                ifc.state = Router::OspfIfWaiting;
+                ifc.waitUntil = 0;
+            }
+        }
     }
     else if (cmd == "acl")
     {

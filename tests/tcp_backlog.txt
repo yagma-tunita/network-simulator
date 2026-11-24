@@ -1,0 +1,19 @@
+add-device PC1 end
+add-device PC2 end
+add-device SRV end
+add-device SW1 switch
+add-port PC1 aa:aa:aa:aa:aa:01 10.0.0.1/24
+add-port PC2 aa:aa:aa:aa:aa:02 10.0.0.2/24
+add-port SRV aa:aa:aa:aa:aa:03 10.0.0.3/24
+add-port SW1 aa:00:00:00:00:01
+add-port SW1 aa:00:00:00:00:02
+add-port SW1 aa:00:00:00:00:03
+connect PC1:0 SW1:0
+connect PC2:0 SW1:1
+connect SRV:0 SW1:2
+tcp-listen SRV on 80
+tcp-backlog SRV 1
+tcp-connect PC1 10.0.0.3 80 a
+tcp-connect PC2 10.0.0.3 80 b
+run 200
+tcp-status SRV

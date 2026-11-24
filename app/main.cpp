@@ -3,6 +3,7 @@
 #include "../topo/CommandRunner.hpp"
 #include "../topo/JsonConfig.hpp"
 #include "../device/Device.hpp"
+#include "../device/Port.hpp"
 #include "Version.hpp"
 #include "LineEditor.hpp"
 
@@ -174,11 +175,11 @@ static void RunInteractive(CommandContext &ctx)
             "new", "demo", "help", "quit", "exit",
             "devices", "links", "ports", "routes", "arp-table", "mac-table",
             "traceroute", "export", "udp-echo", "udp-send", "map", "generate",
-            "tcp-listen", "tcp-connect",
-            "dhcp-server", "dhcp-client", "dns-server", "dns-record", "dns-query",
+            "tcp-listen", "tcp-connect", "tcp-keepalive", "tcp-status", "tcp-backlog",
+            "dhcp-server", "dhcp-client", "dhcp-relay", "dns-server", "dns-record", "dns-cname", "dns-query",
             "nat", "nat-port", "nat-table",
             "rip", "rip-status",
-            "ospf", "ospf-status", "ospf-auth",
+            "ospf", "ospf-status", "ospf-auth", "ospf-cost", "ospf-passive", "ospf-area", "ospf-area-type", "ospf-external",
             "tcp-lite-echo", "tcp-lite-echo-client", "acl"
         };
         std::vector<std::string> out;
@@ -450,7 +451,6 @@ int main(int argc, char **argv)
         std::cerr << "error: --json cannot be combined with -i\n";
         return 2;
     }
-
     ctx.quiet = quiet;
 
     Reporter rep;

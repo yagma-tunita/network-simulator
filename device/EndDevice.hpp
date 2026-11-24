@@ -36,6 +36,7 @@ struct EndDevice : Device
 
     static constexpr std::size_t kMaxPending = 64;
     static constexpr uint64_t kPingTimeout = 50;
+    static constexpr std::size_t kMaxTcpConns = 256;
 
     ArpAgent arp;
 
@@ -71,6 +72,16 @@ struct EndDevice : Device
     bool tcpListenEnabled = false;
     uint16_t tcpListenPort = 0;
     uint16_t nextTcpLocalPort = 40000;
+    bool tcpKeepalive = false;
+    uint64_t tcpKeepIdle = 300;
+    uint64_t tcpKeepInterval = 75;
+    uint8_t tcpKeepCount = 3;
+    uint64_t tcpAccepted = 0;
+    uint64_t tcpDropped = 0;
+    uint64_t tcpResetsSent = 0;
+    std::size_t tcpBacklog = 64;
+    uint64_t tcpCookiesSent = 0;
+    uint64_t tcpCookiesAccepted = 0;
 
     bool dhcpServerEnabled = false;
     Ipv4 dhcpPoolStart;
@@ -88,12 +99,19 @@ struct EndDevice : Device
     uint32_t nextDhcpXid = 1;
     Ipv4 dhcpOfferedIp;
     Ipv4 dhcpServerId;
+    Ipv4 dhcpServerAddr;
+    uint64_t dhcpLeaseSec = 0;
+    uint64_t dhcpLeaseEnd = 0;
+    uint64_t dhcpRenewAt = 0;
+    uint64_t dhcpRebindAt = 0;
+    uint64_t dhcpTimerGen = 0;
 
     bool hasDnsServer = false;
     Ipv4 dnsServerIp;
 
     bool dnsServerEnabled = false;
-    std::map<std::string, Ipv4> dnsRecords;
+    std::map<std::string, std::vector<Ipv4>> dnsRecords;
+    std::map<std::string, std::string> dnsCnames;
 
     uint16_t dnsClientPort = 0;
     uint32_t dnsQueryId = 0;
@@ -124,17 +142,34 @@ struct EndDevice : Device
     void SetTcpEcho(bool on, uint16_t port = 0);
     void TcpEchoClient(Ipv4 targetIp, uint16_t dstPort, const std::string &text);
     void SetTcpListen(bool on, uint16_t port = 0);
+    void SetTcpKeepalive(bool on, uint64_t idle = 300, uint64_t interval = 75,
+                         uint8_t count = 3);
     void TcpConnect(Ipv4 targetIp, uint16_t dstPort, const std::string &text);
-    bool HandleTcpStack(Port *port, const IpPacket &pkt);
+    bool HandleTcpStack(Port *port, const IpPacket &pkt, const Mac &srcMac);
     void SendTcpSegment(TcpConnection &conn, const TcpSegment &seg);
     TcpConnection *FindTcpConn(uint16_t localPort, Ipv4 remote, uint16_t remotePort);
+    void CleanupTcpConns();
+    void SendTcpReset(Port *ingress, const IpPacket &pkt,
+                      const TcpSegment &seg, const Mac &srcMac);
+    uint32_t TcpCookieSecret(Port *port) const;
+    uint32_t TcpCookie(Port *port, Ipv4 remote, uint16_t rport,
+                       uint32_t clientIsn, uint64_t bucket) const;
+    void SendTcpCookieSynAck(Port *ingress, const IpPacket &pkt,
+                             const TcpSegment &seg, const Mac &srcMac,
+                             uint32_t clientIsn);
+    bool AcceptTcpCookie(Port *ingress, const IpPacket &pkt,
+                         const TcpSegment &seg, const Mac &srcMac);
     void SetDhcpServer(bool on, const Ipv4 &start, const Ipv4 &end,
                        uint8_t prefix, const Ipv4 &gw, const Ipv4 &dns);
     void StartDhcpClient(Port *p);
+    void ScheduleDhcpTimer(uint64_t at);
+    void OnDhcpTimer(uint64_t gen);
+    void SendDhcpRenew(bool rebind);
     void HandleDhcp(Port *port, const IpPacket &pkt, const UdpDatagram &dgram);
     void SendDhcpPacket(Port *egress, const DhcpMessage &msg);
     void SetDnsServer(bool on);
     void AddDnsRecord(const std::string &name, const Ipv4 &ip);
+    void AddDnsCname(const std::string &alias, const std::string &target);
     void DnsQuery(const Ipv4 &server, const std::string &name);
     void HandleDns(Port *port, const IpPacket &pkt, const UdpDatagram &dgram);
     void HandleTcp(Port *port, const IpPacket &pkt, uint64_t now);

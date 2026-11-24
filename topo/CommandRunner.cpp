@@ -174,10 +174,15 @@ namespace
             { "udp-send", "udp-send <device> <ip> <dport> <text...>" },
             { "tcp-listen", "tcp-listen <device> on|off [port]" },
             { "tcp-connect", "tcp-connect <device> <ip> <port> [text...]" },
+            { "tcp-keepalive", "tcp-keepalive <device> on [idle interval count]|off" },
+            { "tcp-status", "tcp-status <device>" },
+            { "tcp-backlog", "tcp-backlog <device> <1-1024>" },
             { "dhcp-server", "dhcp-server <device> on <start> <end> <prefix> <gateway> [dns] | off" },
             { "dhcp-client", "dhcp-client <device> [port-index]" },
+            { "dhcp-relay", "dhcp-relay <router> <dev:idx> <server-ip>|off" },
             { "dns-server", "dns-server <device> on|off" },
             { "dns-record", "dns-record <device> <name> <ip>" },
+            { "dns-cname", "dns-cname <device> <alias> <target>" },
             { "dns-query", "dns-query <device> [server-ip] <name>" },
             { "nat", "nat <router> on <inside-dev:idx> <outside-dev:idx> | off" },
             { "nat-port", "nat-port <router> tcp|udp <public-port> <inside-ip> <inside-port>" },
@@ -186,7 +191,12 @@ namespace
             { "rip-status", "rip-status <router>" },
             { "ospf", "ospf <router> on|off" },
             { "ospf-status", "ospf-status <router>" },
-            { "ospf-auth", "ospf-auth <router> none|simple <password>" },
+            { "ospf-auth", "ospf-auth <router> none|simple <password>|md5|sha1|sha256 <key-id> <key>" },
+            { "ospf-cost", "ospf-cost <router> <dev:idx> <1-65535>" },
+            { "ospf-passive", "ospf-passive <router> <dev:idx> on|off" },
+            { "ospf-area", "ospf-area <router> <dev:idx> <area-id>" },
+            { "ospf-area-type", "ospf-area-type <router> <area-id> stub|nssa|normal" },
+            { "ospf-external", "ospf-external <router> <ip/prefix> [metric]|clear" },
             { "tcp-lite-echo", "tcp-lite-echo <device> on|off [port]" },
             { "tcp-lite-echo-client", "tcp-lite-echo-client <device> <ip> <port> <text...>" },
             { "acl", "acl <router> in|out allow|deny <src/p> <dst/p> <proto|any>" },
@@ -445,10 +455,15 @@ void PrintHelp()
         "  udp-send   <device> <ip> <dport> <text...>\n"
         "  tcp-listen <device> on|off [port]\n"
         "  tcp-connect <device> <ip> <port> [text...]\n"
+        "  tcp-keepalive <device> on [idle interval count]|off\n"
+        "  tcp-status <device>\n"
+        "  tcp-backlog <device> <1-1024>\n"
         "  dhcp-server <device> on <start> <end> <prefix> <gateway> [dns] | off\n"
         "  dhcp-client <device> [port-index]\n"
+        "  dhcp-relay <router> <dev:idx> <server-ip>|off\n"
         "  dns-server <device> on|off\n"
         "  dns-record <device> <name> <ip>\n"
+        "  dns-cname  <device> <alias> <target>\n"
         "  dns-query  <device> [server-ip] <name>\n"
         "  nat        <router> on <inside-dev:idx> <outside-dev:idx> | off\n"
         "  nat-port   <router> tcp|udp <public-port> <inside-ip> <inside-port>\n"
@@ -457,7 +472,12 @@ void PrintHelp()
         "  rip-status <router>\n"
         "  ospf       <router> on|off\n"
         "  ospf-status <router>\n"
-        "  ospf-auth  <router> none|simple <password>\n"
+        "  ospf-auth  <router> none|simple <password>|md5|sha1|sha256 <key-id> <key>\n"
+        "  ospf-cost  <router> <dev:idx> <1-65535>\n"
+        "  ospf-passive <router> <dev:idx> on|off\n"
+        "  ospf-area  <router> <dev:idx> <area-id>\n"
+        "  ospf-area-type <router> <area-id> stub|nssa|normal\n"
+        "  ospf-external <router> <ip/prefix> [metric]|clear\n"
         "  tcp-lite-echo   <device> on|off [port]\n"
         "  tcp-lite-echo-client <device> <ip> <port> <text...>\n"
         "  acl        <router> in|out allow|deny <src/p> <dst/p> <proto|any>\n"

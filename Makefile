@@ -14,9 +14,10 @@ GO ?= go
 AR ?= ar
 
 LUA_DIR := third_party/lua
+BUILD ?= build
 LUA_SRCS := $(wildcard $(LUA_DIR)/*.c)
-LUA_OBJS := $(patsubst $(LUA_DIR)/%.c,build/lua/%.o,$(LUA_SRCS))
-LUA_LIB := build/liblua.a
+LUA_OBJS := $(patsubst $(LUA_DIR)/%.c,$(BUILD)/lua/%.o,$(LUA_SRCS))
+LUA_LIB := $(BUILD)/liblua.a
 
 CXXFLAGS += -DHAVE_LUA -I$(LUA_DIR)
 
@@ -30,7 +31,7 @@ APP_SRCS := $(wildcard app/*.cpp)
 SRCS := $(LIB_SRCS) $(APP_SRCS) script/LuaScript.cpp
 LDLIBS := $(LUA_LIB) -lm
 
-OBJS := $(patsubst %.cpp,build/obj/%.o,$(SRCS))
+OBJS := $(patsubst %.cpp,$(BUILD)/obj/%.o,$(SRCS))
 DEPS := $(OBJS:.o=.d)
 TARGET := netsim
 
@@ -38,11 +39,11 @@ SANFLAGS := -std=c++17 -Wall -Wextra -Werror -O1 -g \
             -fsanitize=address,undefined -fno-omit-frame-pointer -I.
 
 UNIT_SRC := tests/unit/unit_tests.cpp
-UNIT_BIN := build/unit_tests
+UNIT_BIN := $(BUILD)/unit_tests
 FUZZ_SRC := tests/fuzz_parsers.cpp
-FUZZ_BIN := build/fuzz_parsers
+FUZZ_BIN := $(BUILD)/fuzz_parsers
 
-.PHONY: all clean test unit fuzz san tidy dist install coverage soak perf check tools
+.PHONY: all clean test unit fuzz san tidy dist install coverage soak perf check tools gotest
 
 TIDY ?= clang-tidy
 
@@ -51,23 +52,23 @@ all: $(TARGET)
 $(TARGET): $(OBJS) $(LUA_LIB)
 	$(CXX) $(CXXFLAGS) $(OBJS) -o $@ $(LDLIBS) $(COVERAGE_LDFLAGS)
 
-build/obj/%.o: %.cpp
+$(BUILD)/obj/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
-build/lua/%.o: $(LUA_DIR)/%.c
-	@mkdir -p build/lua
+$(BUILD)/lua/%.o: $(LUA_DIR)/%.c
+	@mkdir -p $(BUILD)/lua
 	$(CC) -O2 -I$(LUA_DIR) -c $< -o $@
 
 $(LUA_LIB): $(LUA_OBJS)
 	$(AR) rcs $@ $^
 
 $(UNIT_BIN): $(UNIT_SRC) $(LIB_SRCS)
-	@mkdir -p build
+	@mkdir -p $(BUILD)
 	$(CXX) $(SANFLAGS) $(UNIT_SRC) $(LIB_SRCS) -o $@
 
 $(FUZZ_BIN): $(FUZZ_SRC) $(LIB_SRCS)
-	@mkdir -p build
+	@mkdir -p $(BUILD)
 	$(CXX) $(SANFLAGS) $(FUZZ_SRC) $(LIB_SRCS) -o $@
 
 unit: $(UNIT_BIN)
@@ -90,7 +91,7 @@ dist: $(TARGET)
 	@mkdir -p dist
 	tar czf dist/yanas-net-$(VERSION).tar.gz \
 		--exclude='*.o' --exclude='*.a' --exclude='*.d' --exclude='dist' \
-		core device link engine topo netstack app script tests win docs examples third_party packaging \
+		core device link engine topo netstack app script tests win docs examples third_party packaging tools \
 		CMakeLists.txt Makefile Makefile.win .github .clang-tidy .gitignore .gitattributes \
 		$(TARGET) \
 		$(if $(wildcard netsim.exe),netsim.exe) \
@@ -114,14 +115,18 @@ soak:
 perf:
 	bash tests/perf.sh
 
-check: test coverage soak perf
-	@$(MAKE) clean >/dev/null 2>&1
+check: test gotest coverage soak perf
 	@echo "check complete"
 
 tools:
 	@mkdir -p build
-	cd tools/ynstress && $(GO) build -o ../../build/ynstress .
-	@echo "built build/ynstress"
+	cd tools/ynstress && $(GO) build -o ../../build/ynstress ./cmd/ynstress
+	cd tools/ynpcap && $(GO) build -o ../../build/ynpcap ./cmd/ynpcap
+	@echo "built build/ynstress and build/ynpcap"
+
+gotest:
+	cd tools/ynstress && $(GO) test ./...
+	cd tools/ynpcap && $(GO) test ./...
 
 test: $(UNIT_BIN) $(FUZZ_BIN) $(TARGET)
 	ASAN_OPTIONS=detect_leaks=1 ./$(UNIT_BIN)
