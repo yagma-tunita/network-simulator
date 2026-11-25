@@ -18,9 +18,18 @@ UDP echo (\fBudp-echo\fR/\fBudp-send\fR), a real TCP service and client
 RTT-based retransmission, RST, keepalive, zero-window persist, simultaneous
 open/close, timestamps, delayed ACK/Nagle, SACK/DSACK recovery, SYN backlog and
 cookies, and \fBtcp-status\fR diagnostics; the deprecated
-\fBtcp-lite-*\fR teaching transport (not TCP); a DHCP server/client
-(\fBdhcp-server\fR/\fBdhcp-client\fR/\fBdhcp-relay\fR); a DNS server and resolver
-(\fBdns-server\fR/\fBdns-record\fR/\fBdns-cname\fR/\fBdns-query\fR); source NAT/PAT and port
+\fBtcp-lite-*\fR legacy lightweight transport (not TCP); a DHCP server/client
+(\fBdhcp-server\fR/\fBdhcp-client\fR/\fBdhcp-relay\fR) with lease renewal,
+rebind, expiry/reclaim, \fBdhcp-lease-time\fR and \fBdhcp-release\fR; a DNS
+server and resolver
+(\fBdns-server\fR/\fBdns-record\fR/\fBdns-cname\fR/\fBdns-query\fR) with
+configurable TTL and client caching; PTR and MX records; negative caching with
+SOA TTL; resolver failover/retry, EDNS0 and DNS-over-TCP fallback, authoritative
+zones, NS delegation (glue and no-glue), wildcard records, AXFR zone transfer
+with source ACLs and TSIG authentication, dynamic UPDATE/prerequisites,
+AAAA records, per-RRset TTLs, primary/secondary NOTIFY/AXFR replication with SOA
+refresh/expire timers, IXFR journal/diagnostics/refresh fallback, bounded LRU
+caching and TTL clamps; source NAT/PAT and port
 forwarding (\fBnat\fR/\fBnat-port\fR/\fBnat-table\fR); RIP v2-lite dynamic
 routing (\fBrip\fR/\fBrip-status\fR); and an OSPFv2 implementation with
 per-area LSDB/SPF and ABR Type 3/4 summaries, Type 5 external routes, stub/NSSA areas (Type 7 translation), interface cost/passive policy and

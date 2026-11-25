@@ -1,0 +1,4 @@
+dns: update example.com ok
+dns: host.example.com -> 10.0.0.9
+dns: update example.com ok
+dns: host.example.com -> NXDOMAIN

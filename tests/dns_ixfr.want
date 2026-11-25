@@ -1,0 +1,11 @@
+dns: update example.com ok
+dns: ixfr example.com from 1
+dns: ixfr SOA 2
+dns: ixfr SOA 1
+dns: ixfr SOA 2
+dns: ixfr A second.example.com 10.0.0.9
+dns: ixfr SOA 2
+dns: ixfr example.com complete
+dns: ixfr example.com from 2
+dns: ixfr SOA 2
+dns: ixfr example.com complete

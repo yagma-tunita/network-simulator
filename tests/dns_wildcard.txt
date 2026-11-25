@@ -1,0 +1,22 @@
+add-device PC1 end
+add-device SRV end
+add-port PC1 aa:aa:aa:aa:aa:01 10.0.0.1/24
+add-port SRV aa:aa:aa:aa:aa:02 10.0.0.2/24
+connect PC1:0 SRV:0
+dns-server SRV on
+dns-zone SRV example.com
+dns-record SRV *.example.com 10.0.0.9
+dns-record SRV host.example.com 10.0.0.5
+dns-record SRV target.example.com 10.0.0.7
+dns-cname SRV *.alias.example.com target.example.com
+dns-mx SRV *.mail.example.com 10 mail.example.com
+dns-query PC1 10.0.0.2 foo.example.com A
+run
+dns-query PC1 10.0.0.2 host.example.com A
+run
+dns-query PC1 10.0.0.2 x.alias.example.com A
+run
+dns-query PC1 10.0.0.2 foo.example.com MX
+run
+dns-query PC1 10.0.0.2 x.mail.example.com MX
+run

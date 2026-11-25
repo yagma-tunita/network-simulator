@@ -1,0 +1,4 @@
+dns: example.com -> 10.0.0.1
+dns: cached example.com -> 10.0.0.1
+dns: cached example.com -> 10.0.0.1
+dns: example.com -> 10.0.0.1

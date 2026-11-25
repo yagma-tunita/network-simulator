@@ -2,12 +2,12 @@
 
 <img src="docs/logo.svg" alt="yanas net" width="72" align="left">
 
-**yanas net** is a deterministic C++17 network simulator for Layer-2/Layer-3
-study and scenarios: IPv4 subnets, Ethernet frames, ARP, VLAN/802.1Q, MAC-learning
-switches, spanning tree (STP and an RSTP-style rapid mode), static routing, and
-ICMP. It is a **terminal-first, scriptable tool for technical users**: an
-interactive CLI plus `.txt`/`.lua`/`.yn` inputs and bundled Lua, all on a
-deterministic engine. (Former GUI/web front ends and the live bridge experiment
+**yanas net** is an engineering-grade deterministic C++17 network simulator for
+Layer-2/Layer-3 analysis, validation and engineering scenarios: IPv4 subnets,
+Ethernet frames, ARP, VLAN/802.1Q, MAC-learning switches, spanning tree (STP and
+an RSTP-style rapid mode), static routing, and ICMP. It is a **terminal-first,
+scriptable engineering tool**: an interactive CLI plus `.txt`/`.lua`/`.yn` inputs
+and bundled Lua, all on a deterministic engine. (Former GUI/web front ends and the live bridge experiment
 are archived under `legacy/`.)
 It is free software under the GNU GPL v3.0 or later.
 
@@ -100,12 +100,28 @@ comment-free; all documentation lives in this README and `DEVELOPMENT_LOG.md`.
   Listener backlog is bounded with
   stateless SYN cookies; each host is capped at 256 concurrent connections with
   dropped/reset counters and `tcp-status`.
-  `tcp-lite-*` remains as a deprecated teaching transport and is **not** TCP.
+  `tcp-lite-*` remains as a deprecated legacy lightweight transport and is **not** TCP.
 - DHCP server/client with relay (`dhcp-server`/`dhcp-client`/`dhcp-relay`),
-  configurable pool, gateway and DNS option; leases renew at 50%, rebind at
-  87.5%, and expire if no server answers. DNS server/client
-  (`dns-server`/`dns-record`/`dns-cname`/`dns-query`) with A, multiple-A,
-  CNAME and NXDOMAIN. DHCP can configure the host DNS server.
+  configurable pool, gateway, DNS option and lease time; leases renew at 50%,
+  rebind at 87.5%, expire/reclaim server-side, and can be released with
+  `dhcp-release`. DNS server/client
+  (`dns-server`/`dns-record`/`dns-cname`/`dns-query`) with A, AAAA, multiple-A,
+  CNAME, PTR (reverse index), MX, NXDOMAIN/NODATA, configurable TTL (`dns-ttl`)
+  and a TTL-honoring client cache with positive and negative caching (SOA TTL,
+  `dns-negative-ttl`), bounded LRU (`dns-cache-size`) and TTL clamps
+  (`dns-ttl-bounds`). Resolvers support retry/failover (`dns-resolver`,
+  `dns-retry`), strict response validation, EDNS0, automatic DNS-over-TCP
+  fallback, authoritative zones with SOA/NS records, delegation referral
+  following (including no-glue NS resolution), wildcard A/CNAME/MX records, and
+  authoritative AXFR over TCP (`dns-axfr`) with source ACLs
+  (`dns-axfr-allow`) and TSIG authentication (`dns-tsig`,
+  `dns-tsig-require`, HMAC-MD5/SHA-1/SHA-256); dynamic DNS UPDATE with
+  source ACLs and TSIG (`dns-update-add`/`dns-update-del`), with per-RRset TTLs
+  and value-dependent prerequisites (`dns-update-check`). Primary/secondary
+  zones, SOA serial bumps and NOTIFY-driven AXFR refresh are supported, with
+  SOA refresh/retry/expire timers and SERVFAIL for expired secondary data.
+  Secondary refresh uses IXFR with automatic AXFR fallback; `dns-ixfr` provides
+  incremental transfer diagnostics. DHCP can configure the host DNS server.
 - Source NAT/PAT and inbound port forwarding on routers (`nat`, `nat-port`,
   `nat-table`): rewrites TCP/UDP/ICMP, recomputes TCP checksums, and supports
   address overloading plus DNAT to inside hosts.
@@ -722,11 +738,36 @@ tcp-status <device>                            # connections, RTO/window/counter
 tcp-backlog <device> <1-1024>                  # half-open SYN backlog
 dhcp-server <device> on <start> <end> <prefix> <gateway> [dns] | off
 dhcp-client <device> [port-index]              # acquire a lease
+dhcp-lease-time <device> <seconds>             # server lease duration
+dhcp-release <device>                          # release the current lease
 dhcp-relay  <router> <dev:idx> <server-ip>|off # relay DHCP across subnets
-dns-server  <device> on|off                    # DNS A/CNAME server
-dns-record  <device> <name> <ip>               # add a static A record
-dns-cname   <device> <alias> <target>          # add a CNAME
-dns-query   <device> [server-ip] <name>        # resolve a name
+dns-server  <device> on|off                    # DNS A/CNAME/PTR/MX server
+dns-ttl     <device> <seconds>                 # answer TTL (0 disables caching)
+dns-negative-ttl <device> <seconds>            # NXDOMAIN/SOA negative TTL
+dns-cache-size <device> <entries>              # bounded LRU capacity
+dns-ttl-bounds <device> <min> <max>            # cache TTL clamps
+dns-record  <device> <name> <ip> [ttl]          # add a static A record
+dns-aaaa    <device> <name> <ipv6> [ttl]       # add a static AAAA record
+dns-cname   <device> <alias> <target> [ttl]    # add a CNAME
+dns-mx      <device> <name> <preference> <exchange> [ttl]
+dns-zone    <device> <zone>                    # authoritative zone
+dns-secondary <device> <zone> <primary-ip>     # secondary zone + initial AXFR
+dns-notify-target <device> <zone> <ip> [ip...] # NOTIFY destinations
+dns-notify  <device> <zone>                    # send NOTIFY manually
+dns-ns      <device> <owner> <nameserver>      # NS/delegation
+dns-soa     <device> <zone> <mname> <rname> [ttl serial refresh retry expire minimum]
+dns-query   <device> [server-ip] <name> [A|AAAA|NS|SOA|PTR|MX]
+dns-axfr    <device> <server-ip> <zone>        # zone transfer over TCP
+dns-ixfr    <device> <server-ip> <zone> <serial> # incremental transfer diagnostic
+dns-axfr-allow <device> <ip> [ip...] | any|none # AXFR source ACL
+dns-tsig    <device> <key-name> <secret> [md5|sha1|sha256]
+dns-tsig-require <device> on|off               # require TSIG for AXFR
+dns-update-allow <device> <ip> [ip...] | any|none
+dns-update-add <device> <server-ip> <zone> <name> <ip> [ttl]
+dns-update-del <device> <server-ip> <zone> <name> [A|ANY]
+dns-update-check <device> <server-ip> <zone> <name> <ip>
+dns-resolver <device> <ip> [ip...] | off       # resolver list/failover
+dns-retry   <device> <timeout> <attempts>      # per-server retry policy
 nat        <router> on <inside-dev:idx> <outside-dev:idx> | off
 nat-port   <router> tcp|udp <public-port> <inside-ip> <inside-port>
 nat-table  <router>
@@ -754,7 +795,7 @@ state                                          # print a JSON snapshot
 set-gateway <device> <gw-ip>                   # default gateway for a host
 arp        <device> <target-ip>                # inject an ARP request
 ping       <device> <target-ip> [ttl]          # ICMP echo (auto-ARP, RTT)
-run [duration] | step [n] | trace on|off       # bounded run / step / trace
+run [duration] | wait [duration] | step [n] | trace on|off       # bounded run / idle wait / step / trace
 pcap       <file> | pcap off                    # capture frames to a .pcap file
 save       <file.yn>                            # export scene (.yn, JSON)
 load       <file.yn>                            # build scene from .yn
@@ -872,7 +913,7 @@ IPv4/TCP/OSPF headers, checksums, TCP handshake flow, SYN options (MSS/WS/SACK/
 timestamps), and OSPF packet/LSA checksums; with `-ospf-key` it verifies OSPF MD5
 digests. It exits non-zero on any issue.
 
-`make check` adds a coverage gate (about 57% now, floor 54%), a bounded-memory soak
+`make check` adds a coverage gate (about 58% now, floor 54%), a bounded-memory soak
 (256 MiB address-space cap with STP reconvergence), and a throughput floor.
 
 ## Quick start
@@ -918,7 +959,7 @@ g++ -std=c++17 -Wall -Wextra -Icore -Idevice -Iengine \
 
 - `examples/` — runnable scenes and scripts (`01_two_hosts.txt`, `03_router.txt`,
   `04_stp.txt`, `05_lua.lua`, `06_scene.yn`, ...).
-- `docs/USER_GUIDE.md` — a student-oriented walkthrough.
+- `docs/USER_GUIDE.md` — an operator-oriented walkthrough.
 - `CONTRIBUTING.md` and `SECURITY.md` — how to build/contribute and the sandbox.
 - License: GNU GPL v3.0 or later (`LICENSE`, `COPYRIGHT`, `SOURCE-CODE.md`).
 
@@ -1085,7 +1126,7 @@ Implemented:
       `file:line` script errors, `--quiet`, `--keep-going`, `-i`, `--no-lua`,
       direct `.yn` loading, `demo`/`new`, man page (`docs/netsim.1`)
 - [x] Open source under GNU GPLv3 (`LICENSE`, `COPYRIGHT`, `SOURCE-CODE.md`)
-- [x] Examples, student user guide, CONTRIBUTING, and SECURITY docs
+- [x] Examples, operator user guide, CONTRIBUTING, and SECURITY docs
 - [x] `VERSION`, `CHANGELOG.md`, `make dist` / `make install` packaging
 
 Planned:

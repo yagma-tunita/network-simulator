@@ -12,10 +12,15 @@
 #include <cstdint>
 #include <cstddef>
 #include <map>
+#include <unordered_map>
+#include <utility>
+#include <list>
 #include <deque>
 #include <memory>
 #include <vector>
 #include <string>
+
+struct Event;
 
 struct EndDevice : Device
 {
@@ -83,6 +88,12 @@ struct EndDevice : Device
     uint64_t tcpCookiesSent = 0;
     uint64_t tcpCookiesAccepted = 0;
 
+    struct DhcpLease
+    {
+        Ipv4 ip;
+        uint64_t expires = 0;
+    };
+
     bool dhcpServerEnabled = false;
     Ipv4 dhcpPoolStart;
     Ipv4 dhcpPoolEnd;
@@ -90,7 +101,8 @@ struct EndDevice : Device
     Ipv4 dhcpRouter;
     Ipv4 dhcpDns;
     uint8_t dhcpPrefix = 24;
-    std::map<Mac, Ipv4> dhcpLeases;
+    uint32_t dhcpLeaseTime = 3600;
+    std::map<Mac, DhcpLease> dhcpLeases;
 
     bool dhcpClientActive = false;
     int dhcpState = 0;
@@ -106,16 +118,148 @@ struct EndDevice : Device
     uint64_t dhcpRebindAt = 0;
     uint64_t dhcpTimerGen = 0;
 
-    bool hasDnsServer = false;
-    Ipv4 dnsServerIp;
+    std::vector<Ipv4> dnsServers;
+    uint32_t dnsTimeout = 100;
+    uint8_t dnsMaxAttempts = 2;
 
     bool dnsServerEnabled = false;
+    uint32_t dnsTtl = 60;
+    uint32_t dnsNegativeTtl = 60;
     std::map<std::string, std::vector<Ipv4>> dnsRecords;
+    std::map<std::string, std::vector<Ipv6>> dnsAaaa;
     std::map<std::string, std::string> dnsCnames;
+    std::map<std::pair<std::string, uint16_t>, uint32_t> dnsRrTtl;
+
+    struct DnsMxRecord
+    {
+        uint16_t preference = 0;
+        std::string exchange;
+    };
+    std::map<std::string, std::vector<DnsMxRecord>> dnsMxRecords;
+    std::unordered_map<uint32_t, std::string> dnsReverse;
+
+    struct DnsZone
+    {
+        std::string name;
+        std::string mname;
+        std::string rname;
+        uint32_t ttl = 60;
+        uint32_t serial = 1;
+        uint32_t refresh = 3600;
+        uint32_t retry = 600;
+        uint32_t expire = 86400;
+        uint32_t minimum = 60;
+    };
+    std::map<std::string, DnsZone> dnsZones;
+    std::map<std::string, std::vector<std::string>> dnsNsRecords;
+    struct DnsSecondaryState
+    {
+        Ipv4 primary;
+        uint64_t refreshAt = 0;
+        uint64_t expireAt = 0;
+        uint64_t gen = 0;
+        bool expired = false;
+        bool initialized = false;
+    };
+    std::map<std::string, DnsSecondaryState> dnsSecondaryZones;
+    std::map<std::string, std::vector<Ipv4>> dnsNotifyTargets;
+
+    struct DnsJournalEntry
+    {
+        uint32_t fromSerial = 0;
+        uint32_t toSerial = 0;
+        std::vector<DnsAnswer> deleted;
+        std::vector<DnsAnswer> added;
+    };
+    std::map<std::string, std::deque<DnsJournalEntry>> dnsJournal;
+    std::vector<Ipv4> dnsAxfrAllow;
+    bool dnsAxfrAllowAny = false;
+    std::vector<Ipv4> dnsUpdateAllow;
+    bool dnsUpdateAllowAny = false;
+
+    struct DnsTsigKey
+    {
+        std::string secret;
+        std::string algorithm;
+    };
+    std::map<std::string, DnsTsigKey> dnsTsigKeys;
+    bool dnsTsigRequired = false;
+    bool dnsTsigClient = false;
+    std::string dnsTsigClientName;
+    std::string dnsTsigClientSecret;
+    std::string dnsTsigClientAlgorithm;
+    std::vector<uint8_t> axfrRequestMac;
+
+    struct DnsCacheEntry
+    {
+        std::vector<DnsAnswer> answers;
+        uint64_t expires = 0;
+        bool negative = false;
+        bool nxdomain = false;
+        std::list<std::pair<std::string, uint16_t>>::iterator lru;
+    };
+
+    struct DnsCacheKeyHash
+    {
+        std::size_t operator()(
+            const std::pair<std::string, uint16_t> &key) const
+        {
+            std::size_t h = std::hash<std::string>{}(key.first);
+            h ^= std::size_t(key.second) + 0x9e3779b9u +
+                 (h << 6) + (h >> 2);
+            return h;
+        }
+    };
+
+    std::unordered_map<std::pair<std::string, uint16_t>, DnsCacheEntry,
+                       DnsCacheKeyHash> dnsCache;
+    std::list<std::pair<std::string, uint16_t>> dnsLru;
+    std::size_t dnsCacheMax = 1024;
+    uint32_t dnsTtlMin = 0;
+    uint32_t dnsTtlMax = 86400;
 
     uint16_t dnsClientPort = 0;
     uint32_t dnsQueryId = 0;
+    uint16_t dnsQueryType = DnsMessage::kTypeA;
     std::string dnsQueryName;
+    std::vector<Ipv4> dnsQueryServers;
+    std::size_t dnsQueryServerIndex = 0;
+    uint8_t dnsQueryAttempt = 0;
+    Ipv4 dnsQueryServer;
+    uint64_t dnsTimerGen = 0;
+    Event *dnsRetryEvent = nullptr;
+    uint8_t dnsReferralDepth = 0;
+    bool dnsInternalQuery = false;
+    std::string dnsOriginalName;
+    uint16_t dnsOriginalType = DnsMessage::kTypeA;
+    std::string dnsReferralOwner;
+    bool dnsTcpActive = false;
+    TcpConnection *dnsTcpConn = nullptr;
+    uint16_t nextDnsTcpLocalPort = 54000;
+    bool axfrActive = false;
+    bool axfrInternal = false;
+    bool axfrUseIxfr = false;
+    uint32_t axfrClientSerial = 0;
+    std::string axfrInternalZone;
+    std::vector<DnsAnswer> axfrRecords;
+    TcpConnection *axfrConn = nullptr;    std::string axfrZone;
+    uint16_t axfrId = 0;
+    uint8_t axfrSoaCount = 0;
+    std::size_t axfrRecordCount = 0;
+    uint16_t nextAxfrLocalPort = 55000;
+    bool ixfrActive = false;
+    TcpConnection *ixfrConn = nullptr;
+    uint16_t ixfrId = 0;
+    std::string ixfrZone;
+    uint32_t ixfrSerial = 0;
+    std::vector<uint8_t> ixfrRequestMac;
+    uint16_t nextIxfrLocalPort = 56000;
+    bool dnsUpdateActive = false;
+    uint16_t dnsUpdatePort = 0;
+    uint16_t dnsUpdateId = 0;
+    Ipv4 dnsUpdateServer;
+    std::string dnsUpdateZone;
+    std::vector<uint8_t> dnsUpdateRequestMac;
     uint32_t nextDnsId = 1;
     uint16_t nextDnsClientPort = 53000;
 
@@ -161,17 +305,133 @@ struct EndDevice : Device
                          const TcpSegment &seg, const Mac &srcMac);
     void SetDhcpServer(bool on, const Ipv4 &start, const Ipv4 &end,
                        uint8_t prefix, const Ipv4 &gw, const Ipv4 &dns);
+    void SetDhcpLeaseTime(uint32_t seconds)
+    {
+        dhcpLeaseTime = seconds ? seconds : 3600;
+    }
+    void PurgeDhcpLeases(uint64_t now);
     void StartDhcpClient(Port *p);
+    void SendDhcpRelease();
     void ScheduleDhcpTimer(uint64_t at);
     void OnDhcpTimer(uint64_t gen);
     void SendDhcpRenew(bool rebind);
     void HandleDhcp(Port *port, const IpPacket &pkt, const UdpDatagram &dgram);
     void SendDhcpPacket(Port *egress, const DhcpMessage &msg);
     void SetDnsServer(bool on);
+    void SetDnsTtl(uint32_t seconds) { dnsTtl = seconds; }
+    void SetDnsNegativeTtl(uint32_t seconds) { dnsNegativeTtl = seconds; }
+    void SetDnsResolvers(const std::vector<Ipv4> &servers);
+    void SetDnsCacheLimit(std::size_t entries);
+    void SetDnsTtlBounds(uint32_t minimum, uint32_t maximum)
+    {
+        dnsTtlMin = minimum;
+        dnsTtlMax = maximum;
+    }
+    uint32_t ClampDnsTtl(uint32_t ttl) const;
+    void TouchDnsCache(
+        const std::pair<std::string, uint16_t> &key);
+    void StoreDnsCache(const std::pair<std::string, uint16_t> &key,
+                       const DnsCacheEntry &entry);
+    void RemoveDnsCache(const std::pair<std::string, uint16_t> &key);
+    void SetDnsRetry(uint32_t timeout, uint8_t attempts)
+    {
+        dnsTimeout = timeout ? timeout : 1;
+        dnsMaxAttempts = attempts ? attempts : 1;
+    }
     void AddDnsRecord(const std::string &name, const Ipv4 &ip);
+    void AddDnsAaaa(const std::string &name, const Ipv6 &ip);
     void AddDnsCname(const std::string &alias, const std::string &target);
-    void DnsQuery(const Ipv4 &server, const std::string &name);
+    void AddDnsMx(const std::string &name, uint16_t preference,
+                  const std::string &exchange);
+    void SetDnsRrTtl(const std::string &name, uint16_t type, uint32_t ttl);
+    uint32_t DnsRrTtl(const std::string &name, uint16_t type,
+                      uint32_t fallback) const;
+    void AddDnsZone(const std::string &zone);
+    void AddDnsSecondary(const std::string &zone, const Ipv4 &primary);
+    void SetDnsNotifyTargets(const std::string &zone,
+                             const std::vector<Ipv4> &targets);
+    void NotifyDnsZone(const std::string &zone);
+    void NotifyDnsZone(const std::string &zone,
+                       const std::vector<Ipv4> &targets);
+    void StartDnsSecondaryTransfer(const std::string &zone,
+                                   const Ipv4 &primary);
+    void ApplyDnsSecondaryTransfer(const std::string &zone,
+                                   const std::vector<DnsAnswer> &records);
+    void ApplyDnsSecondaryIxfr(const std::string &zone,
+                               const std::vector<DnsAnswer> &records,
+                               uint32_t clientSerial);
+    void ScheduleDnsSecondary(const std::string &zone, uint64_t delay);
+    void OnDnsSecondaryTimer(const std::string &zone, uint64_t gen);
+    void DnsSecondaryFailed(const std::string &zone);
+    void SetDnsSoa(const std::string &zone, const std::string &mname,
+                   const std::string &rname, uint32_t ttl, uint32_t serial,
+                   uint32_t refresh, uint32_t retry, uint32_t expire,
+                   uint32_t minimum);
+    void AddDnsNs(const std::string &owner, const std::string &nameserver);
+    void SetDnsAxfrAllow(const std::vector<Ipv4> &allow, bool any);
+    bool DnsAxfrAllowed(const Ipv4 &client) const;
+    void SetDnsUpdateAllow(const std::vector<Ipv4> &allow, bool any);
+    bool DnsUpdateAllowed(const Ipv4 &client) const;
+    DnsMessage ProcessDnsUpdate(const DnsMessage &m, const Ipv4 &client);
+    void DnsUpdateAdd(const Ipv4 &server, const std::string &zone,
+                      const std::string &name, const Ipv4 &ip, uint32_t ttl);
+    void DnsUpdateDelete(const Ipv4 &server, const std::string &zone,
+                         const std::string &name, uint16_t qtype);
+    void DnsUpdateCheck(const Ipv4 &server, const std::string &zone,
+                        const std::string &name, const Ipv4 &ip);
+    void SendDnsUpdate(const Ipv4 &server, const std::string &zone,
+                       const std::vector<DnsAnswer> &updates,
+                       const std::vector<DnsAnswer> &prereqs = {});
+    void AddDnsTsig(const std::string &keyName, const std::string &secret,
+                    const std::string &algorithm);
+    void SetDnsTsigRequired(bool required) { dnsTsigRequired = required; }
+    const DnsTsigKey *FindDnsTsigKey(const std::string &name) const;
+    bool HasDnsName(const std::string &name) const;
+    std::string FindDnsWildcard(const std::string &name) const;
+    void DnsQuery(const std::string &name,
+                  uint16_t qtype = DnsMessage::kTypeA);
+    void DnsQuery(const Ipv4 &server, const std::string &name,
+                  uint16_t qtype = DnsMessage::kTypeA);
+    void StartDnsQuery(const std::string &name, uint16_t qtype,
+                       const std::vector<Ipv4> &servers);
+    void SendDnsQuery();
+    void ScheduleDnsRetry(uint64_t delay = 0);
+    void CancelDnsRetry();
+    void OnDnsTimeout(uint64_t gen);
+    void FailDnsQuery();
+    void StartDnsTcpQuery();
+    void SendDnsTcpQuery(TcpConnection &conn);
+    void OnDnsTcpData(TcpConnection &conn, const std::vector<uint8_t> &data);
+    void HandleDnsTcpQuery(TcpConnection &conn,
+                           const std::vector<uint8_t> &message);
+    DnsMessage BuildDnsAxfrResponse(const DnsMessage &m);
+    void DnsAxfr(const Ipv4 &server, const std::string &zone);
+    void StartDnsAxfr(const Ipv4 &server, const std::string &zone,
+                      bool internal, bool useIxfr = false,
+                      uint32_t clientSerial = 0);
+    void SendDnsAxfrQuery(TcpConnection &conn);
+    void DnsIxfr(const Ipv4 &server, const std::string &zone,
+                 uint32_t serial);
+    void StartDnsIxfr(const Ipv4 &server, const std::string &zone,
+                      uint32_t serial);
+    void SendDnsIxfrQuery(TcpConnection &conn);
+    void OnDnsIxfrData(TcpConnection &conn, const std::vector<uint8_t> &data);
+    void FailDnsIxfr();
+    DnsMessage BuildDnsIxfrResponse(const DnsMessage &m);
+    std::vector<DnsAnswer> SnapshotDnsZone(const std::string &zone) const;
+    void RecordDnsJournal(const std::string &zone, uint32_t fromSerial,
+                          uint32_t toSerial,
+                          const std::vector<DnsAnswer> &before,
+                          const std::vector<DnsAnswer> &after);    void OnDnsAxfrData(TcpConnection &conn, const std::vector<uint8_t> &data);
+    void FailDnsAxfr();
+    bool PrintDnsAnswers(const std::string &name,
+                         const std::vector<DnsAnswer> &answers,
+                         bool cached = false);
     void HandleDns(Port *port, const IpPacket &pkt, const UdpDatagram &dgram);
+    DnsMessage BuildDnsResponse(const DnsMessage &m);
+    DnsMessage BuildZonedDnsResponse(const DnsMessage &m);
+    bool TryFollowDnsReferral(const DnsMessage &m);
+    void ProcessDnsResponse(const DnsMessage &m);
     void HandleTcp(Port *port, const IpPacket &pkt, uint64_t now);
     void SendTcpTo(Ipv4 peer, uint16_t sport, uint16_t dport,
                    uint32_t seq, uint32_t ack, uint8_t flags,

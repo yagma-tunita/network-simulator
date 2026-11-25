@@ -1,0 +1,31 @@
+add-device PC1 end
+add-device PC2 end
+add-device PC3 end
+add-device SRV end
+add-device SW1 switch
+add-port PC1 aa:aa:aa:aa:aa:01 10.0.0.1/24
+add-port PC2 aa:aa:aa:aa:aa:04 10.0.0.4/24
+add-port PC3 aa:aa:aa:aa:aa:05 10.0.0.5/24
+add-port SRV aa:aa:aa:aa:aa:02 10.0.0.2/24
+add-port SW1 aa:00:00:00:00:11
+add-port SW1 aa:00:00:00:00:12
+add-port SW1 aa:00:00:00:00:13
+add-port SW1 aa:00:00:00:00:14
+connect PC1:0 SW1:0
+connect PC2:0 SW1:1
+connect PC3:0 SW1:2
+connect SRV:0 SW1:3
+dns-server SRV on
+dns-zone SRV example.com
+dns-record SRV host.example.com 10.0.0.5
+dns-axfr-allow SRV any
+dns-tsig SRV key1 s3cret sha256
+dns-tsig-require SRV on
+dns-tsig PC1 key1 s3cret sha256
+dns-tsig PC2 key1 wrong sha256
+dns-axfr PC3 10.0.0.2 example.com
+run 1000
+dns-axfr PC2 10.0.0.2 example.com
+run 1000
+dns-axfr PC1 10.0.0.2 example.com
+run 1000

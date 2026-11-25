@@ -140,7 +140,7 @@ namespace
 
     bool IsControl(const std::string &c)
     {
-        return c == "run" || c == "step" || c == "quit" || c == "exit"
+        return c == "run" || c == "wait" || c == "step" || c == "quit" || c == "exit"
             || c == "lookup" || c == "help" || c == "trace" || c == "bench"
             || c == "pcap" || c == "save" || c == "load"
             || c == "new" || c == "demo" || c == "state";
@@ -179,11 +179,36 @@ namespace
             { "tcp-backlog", "tcp-backlog <device> <1-1024>" },
             { "dhcp-server", "dhcp-server <device> on <start> <end> <prefix> <gateway> [dns] | off" },
             { "dhcp-client", "dhcp-client <device> [port-index]" },
+            { "dhcp-lease-time", "dhcp-lease-time <device> <seconds>" },
+            { "dhcp-release", "dhcp-release <device>" },
             { "dhcp-relay", "dhcp-relay <router> <dev:idx> <server-ip>|off" },
             { "dns-server", "dns-server <device> on|off" },
-            { "dns-record", "dns-record <device> <name> <ip>" },
-            { "dns-cname", "dns-cname <device> <alias> <target>" },
-            { "dns-query", "dns-query <device> [server-ip] <name>" },
+            { "dns-ttl", "dns-ttl <device> <seconds>" },
+            { "dns-negative-ttl", "dns-negative-ttl <device> <seconds>" },
+            { "dns-cache-size", "dns-cache-size <device> <entries>" },
+            { "dns-ttl-bounds", "dns-ttl-bounds <device> <min> <max>" },
+            { "dns-record", "dns-record <device> <name> <ip> [ttl]" },
+            { "dns-aaaa", "dns-aaaa <device> <name> <ipv6> [ttl]" },
+            { "dns-cname", "dns-cname <device> <alias> <target> [ttl]" },
+            { "dns-mx", "dns-mx <device> <name> <preference> <exchange> [ttl]" },
+            { "dns-zone", "dns-zone <device> <zone>" },
+            { "dns-secondary", "dns-secondary <device> <zone> <primary-ip>" },
+            { "dns-notify-target", "dns-notify-target <device> <zone> <ip> [ip...]" },
+            { "dns-notify", "dns-notify <device> <zone>" },
+            { "dns-ns", "dns-ns <device> <owner> <nameserver>" },
+            { "dns-soa", "dns-soa <device> <zone> <mname> <rname> [ttl serial refresh retry expire minimum]" },
+            { "dns-query", "dns-query <device> [server-ip] <name> [A|AAAA|NS|SOA|PTR|MX]" },
+            { "dns-axfr", "dns-axfr <device> <server-ip> <zone>" },
+            { "dns-ixfr", "dns-ixfr <device> <server-ip> <zone> <serial>" },
+            { "dns-axfr-allow", "dns-axfr-allow <device> <ip> [ip...] | any|none" },
+            { "dns-tsig", "dns-tsig <device> <key-name> <secret> [md5|sha1|sha256]" },
+            { "dns-tsig-require", "dns-tsig-require <device> on|off" },
+            { "dns-update-allow", "dns-update-allow <device> <ip> [ip...] | any|none" },
+            { "dns-update-add", "dns-update-add <device> <server-ip> <zone> <name> <ip> [ttl]" },
+            { "dns-update-del", "dns-update-del <device> <server-ip> <zone> <name> [A|ANY]" },
+            { "dns-update-check", "dns-update-check <device> <server-ip> <zone> <name> <ip>" },
+            { "dns-resolver", "dns-resolver <device> <ip> [ip...] | off" },
+            { "dns-retry", "dns-retry <device> <timeout> <attempts>" },
             { "nat", "nat <router> on <inside-dev:idx> <outside-dev:idx> | off" },
             { "nat-port", "nat-port <router> tcp|udp <public-port> <inside-ip> <inside-port>" },
             { "nat-table", "nat-table <router>" },
@@ -217,6 +242,7 @@ namespace
             { "lookup", "lookup <device> <ip>" },
             { "bench", "bench [n]" },
             { "run", "run [duration]" },
+            { "wait", "wait [duration]" },
             { "step", "step [n]" },
             { "trace", "trace on|off" },
             { "new", "new" },
@@ -267,6 +293,18 @@ namespace
                 else
                     std::cout << "ran; now=" << ctx.engine->Now() << "\n";
             }
+            return;
+        }
+        if (c == "wait")
+        {
+            const uint64_t kMaxWait = 1000000;
+            uint64_t d = (t.size() > 1) ? std::stoull(t[1]) : 1;
+            if (d > kMaxWait) d = kMaxWait;
+            uint64_t target = ctx.engine->Now() + d;
+            ctx.engine->ScheduleAfter(d, std::make_unique<NopEvent>());
+            ctx.engine->RunUntil(target);
+            if (!ctx.quiet)
+                std::cout << "waited; now=" << ctx.engine->Now() << "\n";
             return;
         }
         if (c == "new")
@@ -460,11 +498,36 @@ void PrintHelp()
         "  tcp-backlog <device> <1-1024>\n"
         "  dhcp-server <device> on <start> <end> <prefix> <gateway> [dns] | off\n"
         "  dhcp-client <device> [port-index]\n"
+        "  dhcp-lease-time <device> <seconds>\n"
+        "  dhcp-release <device>\n"
         "  dhcp-relay <router> <dev:idx> <server-ip>|off\n"
         "  dns-server <device> on|off\n"
-        "  dns-record <device> <name> <ip>\n"
-        "  dns-cname  <device> <alias> <target>\n"
-        "  dns-query  <device> [server-ip] <name>\n"
+        "  dns-ttl    <device> <seconds>\n"
+        "  dns-negative-ttl <device> <seconds>\n"
+        "  dns-cache-size <device> <entries>\n"
+        "  dns-ttl-bounds <device> <min> <max>\n"
+        "  dns-record <device> <name> <ip> [ttl]\n"
+        "  dns-aaaa   <device> <name> <ipv6> [ttl]\n"
+        "  dns-cname  <device> <alias> <target> [ttl]\n"
+        "  dns-mx     <device> <name> <preference> <exchange> [ttl]\n"
+        "  dns-zone   <device> <zone>\n"
+        "  dns-secondary <device> <zone> <primary-ip>\n"
+        "  dns-notify-target <device> <zone> <ip> [ip...]\n"
+        "  dns-notify <device> <zone>\n"
+        "  dns-ns     <device> <owner> <nameserver>\n"
+        "  dns-soa    <device> <zone> <mname> <rname> [ttl serial refresh retry expire minimum]\n"
+        "  dns-query  <device> [server-ip] <name> [A|AAAA|NS|SOA|PTR|MX]\n"
+        "  dns-axfr   <device> <server-ip> <zone>\n"
+        "  dns-ixfr   <device> <server-ip> <zone> <serial>\n"
+        "  dns-axfr-allow <device> <ip> [ip...] | any|none\n"
+        "  dns-tsig   <device> <key-name> <secret> [md5|sha1|sha256]\n"
+        "  dns-tsig-require <device> on|off\n"
+        "  dns-update-allow <device> <ip> [ip...] | any|none\n"
+        "  dns-update-add <device> <server-ip> <zone> <name> <ip> [ttl]\n"
+        "  dns-update-del <device> <server-ip> <zone> <name> [A|ANY]\n"
+        "  dns-update-check <device> <server-ip> <zone> <name> <ip>\n"
+        "  dns-resolver <device> <ip> [ip...] | off\n"
+        "  dns-retry  <device> <timeout> <attempts>\n"
         "  nat        <router> on <inside-dev:idx> <outside-dev:idx> | off\n"
         "  nat-port   <router> tcp|udp <public-port> <inside-ip> <inside-port>\n"
         "  nat-table  <router>\n"
@@ -494,7 +557,7 @@ void PrintHelp()
         "  load       <file.yn>                         # build scene from .yn\n"
         "  new        reset the scene (clears topology and engine)\n"
         "  demo       build a sample 2-host + switch scene and ping\n"
-        "  run [d] | step [n] | trace on|off | lookup <device> <ip> | bench [n] | quit | help\n"
+        "  run [d] | wait [d] | step [n] | trace on|off | lookup <device> <ip> | bench [n] | quit | help\n"
         "  .txt scripts run line-by-line; .yn scenes load; .lua runs a Lua script\n";
 }
 

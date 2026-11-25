@@ -1,0 +1,20 @@
+add-device PC1 end
+add-device SRV end
+add-port PC1 aa:aa:aa:aa:aa:01 10.0.0.1/24
+add-port SRV aa:aa:aa:aa:aa:02 10.0.0.2/24
+connect PC1:0 SRV:0
+dns-server SRV on
+dns-zone SRV example.com
+dns-update-allow SRV 10.0.0.1
+dns-tsig SRV key1 s3cret sha256
+dns-tsig-require SRV on
+dns-tsig PC1 key1 s3cret sha256
+dns-update-add PC1 10.0.0.2 example.com host.example.com 10.0.0.9
+run 1000
+dns-query PC1 10.0.0.2 host.example.com A
+run 1000
+dns-update-del PC1 10.0.0.2 example.com host.example.com A
+wait 100
+run 1000
+dns-query PC1 10.0.0.2 host.example.com A
+run 1000

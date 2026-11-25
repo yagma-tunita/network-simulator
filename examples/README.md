@@ -1,6 +1,6 @@
 # Examples
 
-Runnable scenarios for learning and for copying as a starting point. From the
+Runnable engineering scenarios and templates. From the
 project root (after `make`, or with `netsim.exe` on Windows):
 
 ```sh

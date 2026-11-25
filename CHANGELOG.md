@@ -10,7 +10,7 @@ Initial product build.
   added `COPYRIGHT` and `SOURCE-CODE.md`, and binary distributions ship a source
   archive for GPL compliance.
 - Open-source assets: `examples/` (thirteen runnable scenarios),
-  `docs/USER_GUIDE.md` (student guide), `CONTRIBUTING.md`, and `SECURITY.md`.
+  `docs/USER_GUIDE.md` (operator guide), `CONTRIBUTING.md`, and `SECURITY.md`.
 - Deterministic event engine with a logical clock (`Engine`, `EventQueue`,
   `Scheduler`), header-dependency-tracked Makefile build.
 - Layer-2: Ethernet frames, ARP, MAC-learning switches, VLAN access ports and
@@ -28,13 +28,63 @@ Initial product build.
 - Real TCP service and client (`tcp-listen`/`tcp-connect`): handshake, data,
   out-of-order reassembly, RTO retransmission, FIN/TIME_WAIT, and slow-start/
   congestion-avoidance; packet-level tests incl. loss-driven retransmission.
-- Deprecated `tcp-lite` teaching transport (not TCP).
+- Deprecated `tcp-lite` legacy lightweight transport (not TCP).
 - DHCP server/client (`dhcp-server`/`dhcp-client`; pool, gateway and DNS option)
   and a DNS A-record server plus resolver (`dns-server`/`dns-record`/`dns-query`).
 - DHCP relay (`dhcp-relay`) with giaddr rewriting and unicast server replies;
   DNS CNAME and multiple-A records (`dns-cname`).
 - DHCP lease lifecycle: renew at 50% by unicast, rebind at 87.5% by broadcast,
   expiry clears the client address; server ACKs renewals to `ciaddr`.
+- DHCP server lease database with expiry/reclaim, configurable lease time
+  (`dhcp-lease-time`), and DHCPRELEASE support (`dhcp-release`).
+- DNS answer TTL (`dns-ttl`) and a per-host client cache honoring TTLs;
+  `wait <duration>` advances the clock during idle periods.
+- DNS PTR records from an O(1) reverse index, MX records (`dns-mx`), qtype-aware
+  queries (`A|PTR|MX`) and typed cache entries.
+- DNS negative caching: NXDOMAIN responses carry an SOA authority record;
+  clients honor `min(SOA TTL, MINIMUM)` and cache with `dns-negative-ttl`.
+- DNS resolver reliability: multi-server failover (`dns-resolver`), per-server
+  timeout/retry policy (`dns-retry`), strict source/question validation, NODATA
+  classification/caching, and explicit timeout results.
+- Cancellable event timers are dropped without advancing the logical clock;
+  stale DNS retries no longer perturb scenario timing.
+- DNS EDNS0 (1232-byte advertisement), UDP truncation with TC, and automatic
+  DNS-over-TCP fallback using the real TCP stack; TCP DNS server on port 53.
+- DNS authoritative zones: declarative SOA/NS (`dns-zone`/`dns-ns`/`dns-soa`),
+  delegation referrals with glue, resolver referral following, and NS/SOA
+  query types.
+- DNS wildcard owners (`*.zone`) for A/CNAME/MX with exact-name precedence,
+  NODATA when the wildcard lacks the requested type, and zone-scoped matching.
+- DNS delegation without glue: out-of-bailiwick NS names are resolved first
+  (internal query) and the original lookup then continues at the delegated
+  server; referral loops are bounded.
+- DNS cache engineering: unified positive/negative entries in an O(1) LRU
+  (`dns-cache-size`) with TTL clamps (`dns-ttl-bounds`).
+- DNS AXFR zone transfer over TCP (`dns-axfr`): SOA/NS/A/CNAME/MX export, with
+  TCP framing and a completion summary.
+- AXFR source ACL (`dns-axfr-allow`) with secure default deny and
+  `any`/`none` modes; unauthorized transfers return REFUSED.
+- TSIG-authenticated AXFR (`dns-tsig`, `dns-tsig-require`) with HMAC-MD5,
+  HMAC-SHA1 and HMAC-SHA256, signed requests/responses and time-fudge checks.
+- Dynamic DNS UPDATE (RFC 2136): A/CNAME/MX add, RRset/all delete, prerequisite
+  checks, per-zone source ACLs (`dns-update-allow`) and TSIG authentication over
+  UDP/TCP (`dns-update-add`/`dns-update-del`).
+- Per-RRset TTL storage for A/CNAME/MX/NS: static records accept an optional TTL,
+  UPDATE TTLs are honored, and query/AXFR responses use the stored TTL.
+- Value-dependent UPDATE prerequisites for A/CNAME/MX (`dns-update-check`) with
+  NXDOMAIN/NXRRSET semantics.
+- DNS AAAA records with IPv6 address parsing/formatting (`dns-aaaa`), AAAA query
+  type/cache support, wildcard and AXFR integration.
+- DNS primary/secondary replication: SOA serial bumps on UPDATE, NOTIFY
+  (`dns-notify-target`/`dns-notify`), initial and refresh AXFR
+  (`dns-secondary`), authoritative serving from secondary data.
+- Secondary SOA refresh/retry timers and expiration: periodic AXFR refresh,
+  retry backoff, and SERVFAIL for expired secondary zones.
+- IXFR journaling and server responses (`dns-ixfr`): serial-chain incremental
+  deletes/adds with up-to-date SOA and AXFR fallback when the journal is
+  insufficient.
+- Secondary refresh now negotiates IXFR from its current serial, applies
+  incremental deletes/adds, reports up-to-date zones, and falls back to AXFR.
 - Router NAT: source PAT for TCP/UDP/ICMP (with TCP checksum recomputation) and
   inbound port forwarding (`nat`, `nat-port`, `nat-table`).
 - RIP v2-lite dynamic routing (`rip`, `rip-status`): periodic broadcast updates,

@@ -1,0 +1,6 @@
+dns: a.example -> 10.0.0.1
+dns: b.example -> 10.0.0.2
+dns: cached a.example -> 10.0.0.1
+dns: c.example -> 10.0.0.3
+dns: cached a.example -> 10.0.0.1
+dns: b.example -> 10.0.0.2

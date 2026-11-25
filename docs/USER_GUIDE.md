@@ -1,14 +1,16 @@
-# yanas net — user guide
+# yanas net — operator guide
 
-A short, student-oriented walkthrough. For the full command reference and design
+An operator-oriented walkthrough. For the full command reference and design
 notes see the top-level `README.md`.
 
 ## 1. What it is
 
-yanas net is a deterministic Layer-2/Layer-3 network simulator. You build a small
-network out of hosts, switches, and routers, then send traffic (ARP, ICMP) and
-watch what happens. It is terminal-first, scriptable, and ships with an embedded
-(Lua) scripting engine. Results are reproducible because time is a logical clock.
+yanas net is an engineering-grade deterministic Layer-2/Layer-3 network
+simulator for building and validating offline network scenarios.
+You build a network out of hosts, switches, and routers, then send traffic
+(ARP, ICMP) and inspect the result. It is terminal-first, scriptable, and ships
+with an embedded (Lua) scripting engine. Results are reproducible because time
+is a logical clock.
 
 ## 2. Build and run
 
@@ -81,7 +83,7 @@ set-ip     <dev:idx> <ip>/<prefix>
 arp        <device> <target-ip>
 ping       <device> <target-ip> [ttl]
 traceroute <device> <target-ip> [max-hops]
-run [duration] | step [n] | trace on|off
+run [duration] | wait [duration] | step [n] | trace on|off
 lookup     <device> <ip>
 stats      <device>
 devices | links | ports <device> | routes <router>
@@ -96,11 +98,36 @@ tcp-status <device>
 tcp-backlog <device> <1-1024>
 dhcp-server <device> on <start> <end> <prefix> <gateway> [dns] | off
 dhcp-client <device> [port-index]
+dhcp-lease-time <device> <seconds>
+dhcp-release <device>
 dhcp-relay  <router> <dev:idx> <server-ip>|off
 dns-server <device> on|off
-dns-record <device> <name> <ip>
-dns-cname  <device> <alias> <target>
-dns-query <device> [server-ip] <name>
+dns-ttl    <device> <seconds>
+dns-negative-ttl <device> <seconds>
+dns-cache-size <device> <entries>
+dns-ttl-bounds <device> <min> <max>
+dns-record <device> <name> <ip> [ttl]
+dns-aaaa   <device> <name> <ipv6> [ttl]
+dns-cname  <device> <alias> <target> [ttl]
+dns-mx     <device> <name> <preference> <exchange> [ttl]
+dns-zone   <device> <zone>
+dns-secondary <device> <zone> <primary-ip>
+dns-notify-target <device> <zone> <ip> [ip...]
+dns-notify <device> <zone>
+dns-ns     <device> <owner> <nameserver>
+dns-soa    <device> <zone> <mname> <rname> [ttl serial refresh retry expire minimum]
+dns-query  <device> [server-ip] <name> [A|AAAA|NS|SOA|PTR|MX]
+dns-axfr   <device> <server-ip> <zone>
+dns-ixfr   <device> <server-ip> <zone> <serial>
+dns-axfr-allow <device> <ip> [ip...] | any|none
+dns-tsig   <device> <key-name> <secret> [md5|sha1|sha256]
+dns-tsig-require <device> on|off
+dns-update-allow <device> <ip> [ip...] | any|none
+dns-update-add <device> <server-ip> <zone> <name> <ip> [ttl]
+dns-update-del <device> <server-ip> <zone> <name> [A|ANY]
+dns-update-check <device> <server-ip> <zone> <name> <ip>
+dns-resolver <device> <ip> [ip...] | off
+dns-retry  <device> <timeout> <attempts>
 nat        <router> on <inside-dev:idx> <outside-dev:idx> | off
 nat-port   <router> tcp|udp <public-port> <inside-ip> <inside-port>
 nat-table  <router>
@@ -163,16 +190,55 @@ leaf (for scale experiments). UDP echo: `udp-echo PC2 on 7` then
 `udp-send PC1 10.0.0.2 7 hello` and `run`. Real TCP: `tcp-listen PC2 on 80`
 then `tcp-connect PC1 10.0.0.2 80 hello` performs a three-way handshake, sends
 the text reliably (RTO retransmission, congestion control), and the service
-echoes it back. The older `tcp-lite-*` commands remain as a deprecated teaching
+echoes it back. The older `tcp-lite-*` commands remain as a deprecated legacy
 transport and are **not** TCP. DHCP/DNS: on a server host use
 `dhcp-server SRV on 10.0.0.100 10.0.0.110 24 10.0.0.1 10.0.0.1`,
 `dns-server SRV on`, and `dns-record SRV example.com 10.0.0.1`. A host with an
 unconfigured port runs `dhcp-client PC1 0`, then `dns-query PC1 example.com`
 uses the DNS server supplied by DHCP. For a server on another subnet, attach a
 relay to the client-facing router port: `dhcp-relay R1 R1:0 10.1.0.2`. DNS
-supports multiple A records and CNAMEs (`dns-cname SRV www.example.com example.com`).
+supports multiple A records and CNAMEs (`dns-cname SRV www.example.com example.com`);
+`dns-aaaa SRV host.example.com 2001:db8::5` publishes AAAA records (DNS data
+plane; IPv6 routing is a separate stack concern). `dns-ttl SRV 300` sets answer TTLs and clients cache until expiry. `wait 300`
+advances the clock during idle periods (useful for TTL/timeout tests). NXDOMAIN
+responses carry an SOA and are negatively cached for
+`dns-negative-ttl SRV 100` seconds. NODATA is distinguished from NXDOMAIN and
+cached separately. Queries advertise EDNS0 (1232-byte UDP); if a response is
+truncated (`TC`), the client automatically retries over TCP port 53 and prints
+`dns: truncated; retrying over TCP`. `dns-resolver PC1 10.0.0.53 10.0.0.54`
+configures failover; `dns-retry PC1 50 2` sets 50-unit timeouts with two attempts
+per server. Declare authoritative zones with `dns-zone SRV example.com`, set
+SOA values with `dns-soa`, and delegate with `dns-ns SRV sub.example.com
+ns1.sub.example.com` plus glue A records. Primary/secondary replication uses
+`dns-secondary SEC example.com 10.0.0.2` (initial AXFR) and
+`dns-notify-target PRI example.com 10.0.0.3`; UPDATE bumps the SOA serial and
+sends NOTIFY, which triggers the secondary refresh. Refreshes use IXFR with
+AXFR fallback; periodic SOA refresh/retry/expire timers are honored and expired
+zones answer SERVFAIL. The resolver follows referrals with
+glue and prints `dns: referral <zone> -> <ns-ip>`. If referral glue is absent,
+the resolver resolves the NS hostname (out-of-bailiwick) first and then retries
+the original query. Wildcards use `*` in the owner (`dns-record SRV *.example.com 10.0.0.9`), apply to A/CNAME/MX, and do not
+override exact names. `dns-cache-size PC1 1024` bounds the LRU cache;
+`dns-ttl-bounds PC1 50 100` clamps cached TTLs. `dns-axfr PC1 10.0.0.2 example.com`
+performs an authoritative zone transfer over TCP and prints the SOA/NS/A/CNAME/MX
+records. AXFR is denied by default; allow sources with
+`dns-axfr-allow SRV 10.0.0.1 10.0.0.4`, or `any`/`none`. `dns-ixfr PC1 10.0.0.2
+example.com 1` requests incremental change records since serial 1; the server
+falls back to AXFR when its journal cannot cover the requested serial. Secure transfers with
+TSIG on both sides (`dns-tsig SRV key1 secret sha256` and the same on the client)
+and optionally require it on the server (`dns-tsig-require SRV on`). Dynamic
+updates use `dns-update-allow` for source ACLs and the same TSIG settings:
+`dns-update-add PC1 10.0.0.2 example.com host.example.com 10.0.0.9 300` and
+`dns-update-del PC1 10.0.0.2 example.com host.example.com A`. Static and UPDATE
+records accept a per-RRset TTL, honored by clients and AXFR.
+`dns-update-check PC1 10.0.0.2 example.com host.example.com 10.0.0.9` sends a
+value-dependent prerequisite and reports `ok`, `prereq` or `nxdomain`. PTR is derived from A records
+(`dns-query PC1 10.0.0.2 5.0.0.10.in-addr.arpa PTR`), and MX records use
+`dns-mx SRV example.com 10 mail.example.com`.
 Leases are renewed by unicast at 50% of the lease and rebind by broadcast at
-87.5%; if both fail the address expires and the port loses its IP.
+87.5%; if both fail the address expires and the port loses its IP. The server
+reclaims expired leases and supports `dhcp-release PC1`; set the server lease
+duration with `dhcp-lease-time SRV 3600`.
 NAT: on the router, mark the LAN and WAN
 ports with `nat R1 on R1:0 R1:1`; inside hosts are translated to the WAN address,
 and `nat-port R1 tcp 8080 192.168.1.1 80` forwards a public port to an inside

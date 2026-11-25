@@ -710,7 +710,7 @@ Conventions:
   source tarball, and `packaging/build-win.ps1` builds a source ZIP and embeds it
   in the Windows CLI ZIP (GPLv3 section 6).
 - Added open-source project assets: `examples/` (two hosts, switch/VLAN, router,
-  STP, Lua, `.yn` scene), `docs/USER_GUIDE.md` (student walkthrough),
+  STP, Lua, `.yn` scene), `docs/USER_GUIDE.md` (operator walkthrough),
   `CONTRIBUTING.md`, `SECURITY.md`, and `docs/logo.svg`.
 - Tests: `tests/examples.sh` runs every example and is wired into
   `tests/run_tests.sh`/CI, so the examples stay runnable.
@@ -813,7 +813,7 @@ Conventions:
 - Tests: three new scenarios — `tcp.txt` (direct link), `tcp_router.txt` (host →
   router → host), `tcp_loss.txt` (30% loss drives retransmission). All 28 `.txt`
   scenarios, 3 Lua scenarios, 12 CLI checks, and 9 examples pass; 175 unit checks.
-- `tcp-lite-*` remains available (and deprecated) as a teaching/contrast transport.
+- `tcp-lite-*` remains available (and deprecated) as a legacy/contrast transport.
 - Next: TCP refinements (MSS/WS/SACK, zero-window probes, keepalive), then
   DHCP/DNS, NAT, dynamic routing, IPv6, full RSTP, scale/engineering.
 
@@ -1195,6 +1195,330 @@ Conventions:
   now run with `-q` and normalize CRLF for multi-line `.want` files.
 - Tests: 361 unit checks, 68 scenarios; PowerShell and Go tests pass;
   coverage 57.2%.
+
+---
+
+## Phase 70 — DHCP server lease database (2026-11-24)
+
+- Server leases now carry an expiry and are reclaimed lazily on Discover/Request;
+  offers hold for 60s and ACKs install the configured lease.
+- Added `dhcp-lease-time <device> <seconds>` (1..604800) and
+  `dhcp-release <device>` (broadcast DHCPRELEASE, relay-compatible).
+- Unknown or expired DHCPREQUESTs receive NAK instead of being silently dropped.
+- New `dhcp_release` and `dhcp_reclaim` scenarios (release and expiry reclaim
+  of a single-address pool).
+- Tests: 361 unit checks, 70 scenarios; PowerShell and Go tests pass;
+  coverage 57.3%; `make check` green with build artifacts preserved.
+
+---
+
+## Phase 71 — DNS TTL and client cache (2026-11-24)
+
+- DNS server answers now use a configurable TTL (`dns-ttl`, 0..86400s).
+- Clients cache positive A results (including CNAME-resolved names) until the
+  minimum answer TTL; cache hits print `dns: cached <name> -> <ip>` and avoid
+  network traffic. Expired entries are dropped lazily on lookup.
+- Added `wait [duration]` for deterministic clock advancement during idle
+  scenario periods; wired into help/autocomplete.
+- New `dns_cache` scenario covers cache hit, TTL still valid, and expiry.
+- Tests: 361 unit checks, 71 scenarios; PowerShell and Go tests pass;
+  coverage 57.5%; `make check` green with build artifacts preserved.
+
+---
+
+## Phase 72 — DNS PTR/MX and typed cache (2026-11-24)
+
+- Added PTR answers derived from A records through an `unordered_map`
+  reverse index (O(1) average per lookup); MX records via `dns-mx`.
+- `dns-query` accepts an optional qtype (`A|PTR|MX`, or 1/12/15) and the cache
+  is keyed by (name, qtype), so A/PTR/MX responses coexist without collisions.
+- DNS codec encodes/decodes PTR (name RDATA) and MX (preference + exchange).
+- New `dns_ptr` and `dns_mx` scenarios; `dns_mx` also covers typed cache hits.
+- Unit tests: PTR/MX round-trip and TTL/preference checks (371 checks total).
+- Tests: 371 unit checks, 73 scenarios; PowerShell and Go tests pass;
+  coverage 58.3%; `make check` green with build artifacts preserved.
+
+---
+
+## Phase 73 — DNS negative caching (2026-11-24)
+
+- DNS codec now round-trips authority records and SOA RDATA (mname/rname,
+  serial/refresh/retry/expire/minimum), with a shared record decoder.
+- NXDOMAIN replies include an SOA authority record; the TTL and MINIMUM use
+  `dns-negative-ttl` (0 disables negative caching).
+- Clients cache NXDOMAIN per (name, qtype) for `min(SOA TTL, MINIMUM)` and
+  print `dns: cached <name> -> NXDOMAIN` on hits; positive responses clear any
+  stale negative entry.
+- New `dns_negative_cache` scenario covers hit and expiry; SOA round-trip unit
+  checks added (378 checks total).
+- Tests: 378 unit checks, 74 scenarios; PowerShell and Go tests pass;
+  coverage 58.4%; `make check` green with build artifacts preserved.
+
+---
+
+## Phase 74 — DNS resolver reliability (2026-11-24)
+
+- Clients keep a resolver list (`dns-resolver`, DHCP installs one), retry each
+  server according to `dns-retry <timeout> <attempts>`, then fail over to the
+  next server. Exhaustion reports `dns: <name> -> timeout`.
+- Responses are accepted only from the current server, with matching ID, port,
+  question name and qtype; stale/forged responses cannot satisfy a query.
+- NODATA is distinguished from NXDOMAIN, printed explicitly, and cached with
+  the same SOA-derived negative TTL in a typed negative-cache entry.
+- New `dns_failover`, `dns_timeout` and `dns_nodata` scenarios.
+- Engine events support cancellation: cancelled timers are dropped without
+  advancing the logical clock; a unit test covers the behavior.
+- Documentation repositioned from introductory wording to operator and
+  engineering terminology.
+- Tests: 381 unit checks, 77 scenarios; PowerShell and Go tests pass;
+  coverage 58.2%; `make check` green with build artifacts preserved.
+
+---
+
+## Phase 75 — DNS EDNS0, truncation and TCP fallback (2026-11-24)
+
+- DNS messages carry an OPT pseudo-record (EDNS0) with a 1232-byte client UDP
+  advertisement; the codec round-trips OPT class/version/flags.
+- UDP server truncates responses above the advertised/512-byte limit, sets TC,
+  and retains the question (and OPT) for retry. TCP responses are never truncated.
+- Clients automatically fall back to DNS-over-TCP on TC, using the real TCP stack;
+  the server listens on TCP port 53 alongside UDP 53 and frames messages with
+  the standard 2-byte length prefix.
+- TCP exchanges use `appRx` stream buffering, validate the response ID/question,
+  close after the response, and have an application watchdog.
+- New `dns_tcp` scenario: 60 A records force UDP truncation, then TCP returns the
+  complete RRset.
+- Tests: 384 unit checks, 78 scenarios; PowerShell and Go tests pass;
+  coverage 58.1%; `make check` green with build artifacts preserved.
+
+---
+
+## Phase 76 — DNS zones, SOA/NS and delegation (2026-11-24)
+
+- Authoritative zones are declared with `dns-zone`; SOA and NS records are
+  configurable (`dns-soa`, `dns-ns`) and queries accept `NS`/`SOA` types.
+- Servers in zoned mode answer only within their zones, return NODATA vs
+  NXDOMAIN with the zone SOA, and emit referrals for delegated subzones.
+- Referrals carry NS authority records and A glue in the additional section;
+  clients follow glue up to eight levels and print the referral hop.
+- Flat record mode remains the default when no zones are declared, preserving
+  existing scenes.
+- DNS codec now round-trips NS records and general additional-section records.
+- New `dns_zone` scenario covers apex NS/SOA, delegation and glue-based
+  resolution through a child authoritative server.
+- Tests: 390 unit checks, 79 scenarios; PowerShell and Go tests pass;
+  coverage 58.1%; `make check` green with build artifacts preserved.
+
+---
+
+## Phase 77 — DNS wildcards (2026-11-24)
+
+- Wildcard owners (`*.zone`) resolve A, CNAME and MX records for names without
+  an exact node; the longest matching wildcard ancestor wins and exact names
+  always take precedence.
+- Answers use the queried owner name; wildcard CNAMEs are followed to the target.
+- Wildcards are zone-scoped in zoned mode and also work in flat mode. Missing
+  types under an existing wildcard return NODATA (not NXDOMAIN).
+- New `dns_wildcard` scenario covers wildcard A, exact-name precedence, wildcard
+  CNAME and wildcard MX, plus NODATA for an absent type.
+- Tests: 390 unit checks, 80 scenarios; PowerShell and Go tests pass;
+  coverage 58.3%; `make check` green with build artifacts preserved.
+
+---
+
+## Phase 78 — DNS delegation without glue (2026-11-24)
+
+- Referral glue is now limited to in-bailiwick nameserver addresses; an
+  out-of-bailiwick NS target is returned without glue.
+- Clients resolve a glue-less NS hostname through an internal A query (no user
+  output/cache pollution), then restart the original query at the resolved
+  address. Loop depth stays bounded and failure reports the original name.
+- Added `dns_noglue` scenario with parent/child zones and an out-of-bailiwick NS.
+- Tests: 390 unit checks, 81 scenarios; PowerShell and Go tests pass;
+  coverage 58.4%; `make check` green with build artifacts preserved.
+
+---
+
+## Phase 79 — DNS cache bounds and TTL clamps (2026-11-24)
+
+- Replaced separate positive/negative maps with one cache using an
+  `unordered_map` + intrusive LRU list: O(1) lookup, touch and eviction.
+- Positive and negative (NXDOMAIN/NODATA) entries share a configurable capacity
+  (`dns-cache-size`, 1..65536); expired entries are removed lazily and capacity
+  changes evict from the LRU tail immediately.
+- Added TTL clamps (`dns-ttl-bounds <min> <max>`) applied to positive and
+  SOA-derived negative TTLs; TTL 0 still disables caching.
+- New `dns_cache_lru` and `dns_ttl_bounds` scenarios; tests: 390 unit checks,
+  83 scenarios; PowerShell and Go tests pass; coverage 58.5%; `make check`
+  green with build artifacts preserved.
+
+---
+
+## Phase 80 — DNS AXFR zone transfer (2026-11-24)
+
+- Added AXFR (type 252) authoritative export over TCP: SOA, apex NS, A, CNAME,
+  MX and delegated NS records, bracketed by opening/closing SOA.
+- UDP AXFR requests are REFUSED; TCP requests use the existing DNS listener and
+  length-prefixed stream framing.
+- Clients use `dns-axfr <device> <server-ip> <zone>` and print each transferred
+  record plus begin/complete markers; transfers stop at the second SOA.
+- New `dns_axfr` scenario covers a complete zone export.
+- Tests: 390 unit checks, 84 scenarios; PowerShell and Go tests pass;
+  coverage 58.7%; `make check` green with build artifacts preserved.
+
+---
+
+## Phase 81 — AXFR source ACL (2026-11-24)
+
+- AXFR is denied by default; `dns-axfr-allow <device> <ip>...` permits specific
+  client addresses, `any` allows all and `none` clears the allow list.
+- Unauthorized AXFR requests receive REFUSED over TCP; the client reports failure.
+- New `dns_axfr_acl` scenario verifies denied and allowed transfers; the existing
+  transfer scenario opts in with `any`.
+- Tests: 390 unit checks, 85 scenarios; PowerShell and Go tests pass;
+  coverage 58.8%; `make check` green with build artifacts preserved.
+
+---
+
+## Phase 82 — TSIG-authenticated AXFR (2026-11-24)
+
+- Added reusable HMAC-MD5/SHA-1/SHA-256 and TSIG RR encode/decode, signing and
+  constant-time verification, including request-MAC chaining for responses.
+- AXFR requests are signed when a client key is configured; servers verify key,
+  algorithm, original ID and time fudge, optionally require TSIG, and sign each
+  response/transfer chunk.
+- Added `dns-tsig <device> <key> <secret> [md5|sha1|sha256]` and
+  `dns-tsig-require <device> on|off`; bad/unsigned transfers fail.
+- New `dns_tsig` scenario covers unsigned, bad-secret and valid transfers.
+- Tests: 398 unit checks, 86 scenarios; PowerShell and Go tests pass;
+  coverage 57.9%; `make check` green with build artifacts preserved.
+
+---
+
+## Phase 83 — DNS dynamic UPDATE (2026-11-24)
+
+- Added RFC 2136 opcode UPDATE over UDP and TCP, including zone section,
+  prerequisite section and update section encoding (`noRdata` RRset deletes).
+- Authoritative zones support A/CNAME/MX additions, RRset/type deletes and
+  all-record deletes with in-zone validation; prerequisites cover exists/not
+  exists and RRset presence.
+- Updates are denied by default; `dns-update-allow` provides per-zone source
+  ACLs. TSIG signing/verification is reused, with required-TSIG enforcement.
+- Added `dns-update-add` and `dns-update-del` client commands with response
+  diagnostics (`ok`, `refused`, `notauth`, `formerr`, `prereq`, etc.).
+- New `dns_update` and `dns_update_auth` scenarios; tests: 403 unit checks,
+  88 scenarios; PowerShell and Go tests pass; coverage 57.8%; `make check`
+  green with build artifacts preserved.
+
+---
+
+## Phase 84 — Per-RRset DNS TTLs (2026-11-24)
+
+- Authoritative records now carry per-(name,type) TTLs for A/CNAME/MX/NS;
+  static `dns-record`/`dns-cname`/`dns-mx` accept an optional TTL.
+- UPDATE additions install the supplied TTL and deletes remove the RRset TTL;
+  queries, CNAME chains, wildcard answers, glue and AXFR all use stored TTLs.
+- New `dns_update_ttl` scenario proves an update TTL overrides the zone default:
+  a 100s dynamic record expires while the zone TTL is 300s.
+- Tests: 403 unit checks, 89 scenarios; PowerShell and Go tests pass;
+  coverage 58.0%; `make check` green with build artifacts preserved.
+
+---
+
+## Phase 85 — Value-dependent UPDATE prerequisites (2026-11-24)
+
+- Prerequisite processing now supports class IN value-dependent checks for A,
+  CNAME and MX: the RRset must exist and contain the exact RDATA; TTL must be 0.
+- Missing names return NXDOMAIN; missing RRsets or values return NXRRSET.
+- Added `dns-update-check <device> <server-ip> <zone> <name> <ip>` to send an
+  A prerequisite-only UPDATE and inspect the result.
+- New `dns_update_prereq` scenario covers satisfied, value-mismatch and missing
+  name prerequisites.
+- Tests: 403 unit checks, 90 scenarios; PowerShell and Go tests pass;
+  coverage 58.1%; `make check` green with build artifacts preserved.
+
+---
+
+## Phase 86 — DNS AAAA and IPv6 address values (2026-11-25)
+
+- Added a self-contained IPv6 value type with compressed/full parsing, embedded
+  IPv4 support, canonical formatting and malformed-input rejection. This is a
+  DNS data-plane type; IPv6 packet routing remains a separate stack effort.
+- DNS codec supports AAAA (type 28, 16-byte RDATA); clients query `AAAA`, print
+  `AAAA <address>` and cache A/AAAA independently.
+- Added `dns-aaaa <device> <name> <ipv6> [ttl]`; AAAA participates in wildcard
+  matching, per-RRset TTLs, zone scope and AXFR export.
+- New `dns_aaaa` scenario covers exact and wildcard AAAA plus cache hits; AXFR
+  scenario now exports AAAA.
+- Tests: 423 unit checks, 91 scenarios; PowerShell and Go tests pass;
+  coverage 58.5%; `make check` green with build artifacts preserved.
+
+---
+
+## Phase 87 — Primary/secondary zones and NOTIFY (2026-11-25)
+
+- UPDATE now bumps the zone SOA serial and sends NOTIFY to configured targets.
+- Added `dns-secondary <device> <zone> <primary-ip>`: creates a secondary zone,
+  performs an initial AXFR, and installs the transferred SOA/NS/A/AAAA/CNAME/MX
+  records with their RRset TTLs.
+- Added `dns-notify-target` and manual `dns-notify`; NOTIFY responses are
+  opcode-correct and unauthorized zones are REFUSED.
+- Secondary refresh reuses AXFR internally without printing individual records;
+  it prints `secondary <zone> updated serial <n>` on each successful refresh.
+- New `dns_secondary` scenario: initial sync, UPDATE serial 1→2, NOTIFY, refresh
+  and authoritative queries from the secondary.
+- Tests: 423 unit checks, 92 scenarios; PowerShell and Go tests pass;
+  coverage 58.6%; soak and perf green; build artifacts preserved. (The monolithic
+  `make check` hit the previous 850s wrapper limit during the slower coverage
+  rebuild; coverage/soak/perf were run separately to completion.)
+
+---
+
+## Phase 88 — Secondary SOA refresh/expire timers (2026-11-25)
+
+- Secondary zones now schedule refresh using the transferred SOA refresh value;
+  each periodic refresh is a full AXFR and resets the expiration deadline from
+  the SOA expire value.
+- Failed refreshes retry at the SOA retry interval. Once the expiration deadline
+  passes without a successful refresh, the secondary marks the zone expired and
+  answers SERVFAIL until a successful NOTIFY/refresh.
+- NOTIFY-triggered transfers and timer-triggered transfers share the same
+  generation-guarded timer state; active transfers defer timer starts.
+- New `dns_secondary_timer` and `dns_secondary_expire` scenarios cover periodic
+  refresh and expiry/SERVFAIL behavior.
+- Tests: 423 unit checks, 94 scenarios; PowerShell and Go tests pass;
+  coverage 58.8%; soak and perf green; build artifacts preserved.
+
+---
+
+## Phase 89 — IXFR journal and incremental transfer (2026-11-25)
+
+- Authoritative updates now snapshot zone RRsets before/after changes and
+  journal bounded (64-entry) deleted/added records keyed by SOA serial.
+- Added IXFR server responses over TCP: up-to-date single SOA, serial-chain
+  incremental deletes/adds, and AXFR fallback when journal coverage is missing.
+- Added the `dns-ixfr <device> <server> <zone> <serial>` diagnostic client over
+  TCP with TSIG/ACL reuse and SOA/A/AAAA/CNAME/MX/NS output.
+- Secondary refresh remains AXFR for now; integrating IXFR into the secondary
+  refresh path is the next step.
+- New `dns_ixfr` scenario covers a serial 1→2 incremental transfer and an
+  up-to-date serial 2 query.
+- Tests: 423 unit checks, 95 scenarios; PowerShell and Go tests pass;
+  coverage 59.0%; soak and perf green; build artifacts preserved.
+
+---
+
+## Phase 90 — Secondary IXFR refresh (2026-11-25)
+
+- Secondary refresh now sends IXFR using the current local serial after its
+  initial AXFR, applies serial-chain deletes/adds, and reports up-to-date zones.
+- AXFR fallback remains automatic when the primary journal cannot cover the
+  requested serial; timers and NOTIFY use the same generation-guarded refresh
+  path.
+- Updated `dns_secondary` and `dns_secondary_timer` expectations for incremental
+  refresh/up-to-date diagnostics.
+- Tests: 423 unit checks, 95 scenarios; PowerShell and Go tests pass;
+  coverage 58.8%; soak and perf green; build artifacts preserved.
 
 ---
 

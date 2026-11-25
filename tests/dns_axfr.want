@@ -1,0 +1,10 @@
+dns: axfr example.com begin
+dns: axfr SOA example.com ns.example.com hostmaster.example.com
+dns: axfr NS example.com ns1.example.com
+dns: axfr A host.example.com 10.0.0.5
+dns: axfr A ns1.example.com 10.0.0.2
+dns: axfr AAAA host.example.com 2001:db8::5
+dns: axfr CNAME www.example.com host.example.com
+dns: axfr MX example.com 10 mail.example.com
+dns: axfr SOA example.com ns.example.com hostmaster.example.com
+dns: axfr example.com complete 8

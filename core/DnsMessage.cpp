@@ -1,6 +1,9 @@
 #include "DnsMessage.hpp"
 #include "ByteIO.hpp"
+#include "Hmac.hpp"
 #include <cstddef>
+#include <cctype>
+#include <algorithm>
 
 using namespace ByteIO;
 
@@ -81,19 +84,81 @@ namespace
         off = jumped ? resume : pos;
         return true;
     }
+
+    std::string CanonicalTsigAlgorithm(const std::string &algorithm)
+    {
+        std::string out;
+        out.reserve(algorithm.size() + 1);
+        for(char c : algorithm)
+            out.push_back(char(std::tolower(static_cast<unsigned char>(c))));
+        if(!out.empty() && out.back() != '.')
+            out.push_back('.');
+        return out;
+    }
+
+    std::vector<uint8_t> TsigMacInput(const DnsMessage &msg,
+                                      const DnsTsig &tsig,
+                                      const std::vector<uint8_t> *requestMac)
+    {
+        DnsMessage wireMsg = msg;
+        wireMsg.tsig.present = false;
+        std::vector<uint8_t> wire = wireMsg.ToBytes();
+        if(wire.empty())
+            return {};
+
+        std::vector<uint8_t> data;
+        if(requestMac)
+        {
+            AppendU16(data, uint16_t(requestMac->size()));
+            data.insert(data.end(), requestMac->begin(), requestMac->end());
+        }
+        data.insert(data.end(), wire.begin(), wire.end());
+
+        if(!AppendName(data, tsig.keyName))
+            return {};
+        AppendU16(data, 255);
+        AppendU32(data, 0);
+        if(!AppendName(data, CanonicalTsigAlgorithm(tsig.algorithm)))
+            return {};
+        for(int shift = 40; shift >= 0; shift -= 8)
+            data.push_back(uint8_t((tsig.timeSigned >> shift) & 0xFF));
+        AppendU16(data, tsig.fudge);
+        AppendU16(data, tsig.error);
+        AppendU16(data, uint16_t(tsig.other.size()));
+        data.insert(data.end(), tsig.other.begin(), tsig.other.end());
+        return data;
+    }
+
+    std::vector<uint8_t> TsigHash(const std::string &algorithm,
+                                  const std::string &secret,
+                                  const std::vector<uint8_t> &data)
+    {
+        std::string alg = CanonicalTsigAlgorithm(algorithm);
+        std::vector<uint8_t> key(secret.begin(), secret.end());
+        if(alg == "hmac-md5.sig-alg.reg.int.")
+            return HmacMd5(key, data);
+        if(alg == "hmac-sha1.")
+            return HmacSha1(key, data);
+        if(alg == "hmac-sha256.")
+            return HmacSha256(key, data);
+        return {};
+    }
 }
 
 std::vector<uint8_t> DnsMessage::ToBytes() const
 {
     std::vector<uint8_t> buf;
-    buf.reserve(64 + questions.size() * 16 + answers.size() * 16);
+    buf.reserve(64 + (questions.size() + answers.size() +
+                      authority.size() + additional.size()) * 16 +
+                      (hasOpt ? 11 : 0));
 
     AppendU16(buf, id);
     AppendU16(buf, flags);
     AppendU16(buf, uint16_t(questions.size()));
     AppendU16(buf, uint16_t(answers.size()));
-    AppendU16(buf, 0);
-    AppendU16(buf, 0);
+    AppendU16(buf, uint16_t(authority.size()));
+    AppendU16(buf, uint16_t(additional.size() + (hasOpt ? 1 : 0) +
+                            (tsig.present ? 1 : 0)));
 
     for (const DnsQuestion &q : questions)
     {
@@ -103,31 +168,106 @@ std::vector<uint8_t> DnsMessage::ToBytes() const
         AppendU16(buf, q.qclass);
     }
 
-    for (const DnsAnswer &a : answers)
+    auto appendRecords = [&](const std::vector<DnsAnswer> &records) -> bool
     {
-        if (!AppendName(buf, a.name))
-            return {};
-        AppendU16(buf, a.type);
-        AppendU16(buf, a.cls);
-        AppendU32(buf, a.ttl);
+        for (const DnsAnswer &a : records)
+        {
+            if (!AppendName(buf, a.name))
+                return false;
+            AppendU16(buf, a.type);
+            AppendU16(buf, a.cls);
+            AppendU32(buf, a.ttl);
 
-        if (a.type == 1)
-        {
-            AppendU16(buf, 4);
-            AppendIpv4(buf, a.ip);
+            if (a.noRdata)
+            {
+                AppendU16(buf, 0);
+            }
+            else if (a.type == DnsMessage::kTypeA)
+            {
+                AppendU16(buf, 4);
+                AppendIpv4(buf, a.ip);
+            }
+            else if (a.type == DnsMessage::kTypeAaaa)
+            {
+                AppendU16(buf, 16);
+                buf.insert(buf.end(), a.ip6.bytes.begin(), a.ip6.bytes.end());
+            }
+            else if (a.type == DnsMessage::kTypeCname ||
+                     a.type == DnsMessage::kTypePtr ||
+                     a.type == DnsMessage::kTypeNs)
+            {
+                std::vector<uint8_t> rdata;
+                if (!AppendName(rdata, a.target))
+                    return false;
+                AppendU16(buf, uint16_t(rdata.size()));
+                buf.insert(buf.end(), rdata.begin(), rdata.end());
+            }
+            else if (a.type == DnsMessage::kTypeMx)
+            {
+                std::vector<uint8_t> rdata;
+                AppendU16(rdata, a.preference);
+                if (!AppendName(rdata, a.target))
+                    return false;
+                AppendU16(buf, uint16_t(rdata.size()));
+                buf.insert(buf.end(), rdata.begin(), rdata.end());
+            }
+            else if (a.type == DnsMessage::kTypeSoa)
+            {
+                std::vector<uint8_t> rdata;
+                if (!AppendName(rdata, a.mname) ||
+                    !AppendName(rdata, a.rname))
+                    return false;
+                AppendU32(rdata, a.serial);
+                AppendU32(rdata, a.refresh);
+                AppendU32(rdata, a.retry);
+                AppendU32(rdata, a.expire);
+                AppendU32(rdata, a.minimum);
+                AppendU16(buf, uint16_t(rdata.size()));
+                buf.insert(buf.end(), rdata.begin(), rdata.end());
+            }
+            else
+            {
+                AppendU16(buf, 0);
+            }
         }
-        else if (a.type == 5)
-        {
-            std::vector<uint8_t> rdata;
-            if (!AppendName(rdata, a.target))
-                return {};
-            AppendU16(buf, uint16_t(rdata.size()));
-            buf.insert(buf.end(), rdata.begin(), rdata.end());
-        }
-        else
-        {
-            AppendU16(buf, 0);
-        }
+        return true;
+    };
+
+    if (!appendRecords(answers) || !appendRecords(authority) ||
+        !appendRecords(additional))
+        return {};
+
+    if (hasOpt)
+    {
+        buf.push_back(0);
+        AppendU16(buf, DnsMessage::kTypeOpt);
+        AppendU16(buf, optUdpSize);
+        AppendU32(buf, (uint32_t(optVersion) << 16) | optFlags);
+        AppendU16(buf, 0);
+    }
+
+    if (tsig.present)
+    {
+        if (!AppendName(buf, tsig.keyName))
+            return {};
+        AppendU16(buf, DnsMessage::kTypeTsig);
+        AppendU16(buf, 255);
+        AppendU32(buf, 0);
+
+        std::vector<uint8_t> rdata;
+        if (!AppendName(rdata, tsig.algorithm))
+            return {};
+        for (int shift = 40; shift >= 0; shift -= 8)
+            rdata.push_back(uint8_t((tsig.timeSigned >> shift) & 0xFF));
+        AppendU16(rdata, tsig.fudge);
+        AppendU16(rdata, uint16_t(tsig.mac.size()));
+        rdata.insert(rdata.end(), tsig.mac.begin(), tsig.mac.end());
+        AppendU16(rdata, tsig.originalId);
+        AppendU16(rdata, tsig.error);
+        AppendU16(rdata, uint16_t(tsig.other.size()));
+        rdata.insert(rdata.end(), tsig.other.begin(), tsig.other.end());
+        AppendU16(buf, uint16_t(rdata.size()));
+        buf.insert(buf.end(), rdata.begin(), rdata.end());
     }
 
     return buf;
@@ -164,9 +304,8 @@ bool DnsMessage::TryFromBytes(const std::vector<uint8_t> &buf, DnsMessage &out)
         out.questions.push_back(q);
     }
 
-    for (uint16_t i = 0; i < an; ++i)
+    auto readRecord = [&](DnsAnswer &a) -> bool
     {
-        DnsAnswer a;
         if (!ReadName(buf, off, a.name))
             return false;
         if (off + 10 > buf.size())
@@ -179,31 +318,159 @@ bool DnsMessage::TryFromBytes(const std::vector<uint8_t> &buf, DnsMessage &out)
         if (off + rdlen > buf.size())
             return false;
         std::size_t rdata = off;
-        if (a.type == 1 && rdlen == 4)
+        a.noRdata = (rdlen == 0);
+        if (a.type == DnsMessage::kTypeA && rdlen == 4)
             a.ip = ReadIpv4(buf, off);
-        else if (a.type == 5)
+        else if (a.type == DnsMessage::kTypeAaaa && rdlen == 16)
+        {
+            for(std::size_t i = 0; i < 16; ++i)
+                a.ip6.bytes[i] = buf[rdata + i];
+        }
+        else if (a.type == DnsMessage::kTypeCname ||
+                 a.type == DnsMessage::kTypePtr ||
+                 a.type == DnsMessage::kTypeNs)
         {
             std::size_t nameOff = rdata;
             if (!ReadName(buf, nameOff, a.target))
                 return false;
         }
-        off += rdlen;
+        else if (a.type == DnsMessage::kTypeMx && rdlen >= 3)
+        {
+            a.preference = ReadU16(buf, rdata);
+            std::size_t nameOff = rdata + 2;
+            if (!ReadName(buf, nameOff, a.target))
+                return false;
+        }
+        else if (a.type == DnsMessage::kTypeSoa)
+        {
+            std::size_t p = rdata;
+            if (!ReadName(buf, p, a.mname))
+                return false;
+            if (!ReadName(buf, p, a.rname))
+                return false;
+            if (p + 20 > rdata + rdlen || p + 20 > buf.size())
+                return false;
+            a.serial = ReadU32(buf, p);
+            a.refresh = ReadU32(buf, p + 4);
+            a.retry = ReadU32(buf, p + 8);
+            a.expire = ReadU32(buf, p + 12);
+            a.minimum = ReadU32(buf, p + 16);
+        }
+        else if (a.type == DnsMessage::kTypeTsig)
+        {
+            std::size_t end = rdata + rdlen;
+            std::size_t p = rdata;
+            if (!ReadName(buf, p, a.tsigAlgorithm))
+                return false;
+            if (p + 8 > end || p + 8 > buf.size())
+                return false;
+            a.tsigTime = 0;
+            for (int i = 0; i < 6; ++i)
+                a.tsigTime = (a.tsigTime << 8) | buf[p + i];
+            a.tsigFudge = ReadU16(buf, p + 6);
+            uint16_t macLen = ReadU16(buf, p + 8);
+            p += 10;
+            if (p + macLen + 6 > end || p + macLen + 6 > buf.size())
+                return false;
+            a.tsigMac.assign(buf.begin() + p, buf.begin() + p + macLen);
+            p += macLen;
+            a.tsigOriginalId = ReadU16(buf, p);
+            a.tsigError = ReadU16(buf, p + 2);
+            uint16_t otherLen = ReadU16(buf, p + 4);
+            p += 6;
+            if (p + otherLen > end || p + otherLen > buf.size())
+                return false;
+            a.tsigOther.assign(buf.begin() + p, buf.begin() + p + otherLen);
+        }
+        off = rdata + rdlen;
+        return true;
+    };
+
+    for (uint16_t i = 0; i < an; ++i)
+    {
+        DnsAnswer a;
+        if (!readRecord(a))
+            return false;
         out.answers.push_back(a);
     }
 
-    for (uint16_t i = 0; i < ns + ar; ++i)
+    for (uint16_t i = 0; i < ns; ++i)
     {
-        std::string skip;
-        if (!ReadName(buf, off, skip))
+        DnsAnswer a;
+        if (!readRecord(a))
             return false;
-        if (off + 10 > buf.size())
+        out.authority.push_back(a);
+    }
+
+    for (uint16_t i = 0; i < ar; ++i)
+    {
+        DnsAnswer a;
+        if (!readRecord(a))
             return false;
-        uint16_t rdlen = ReadU16(buf, off + 8);
-        off += 10;
-        if (off + rdlen > buf.size())
-            return false;
-        off += rdlen;
+        if (a.type == DnsMessage::kTypeOpt)
+        {
+            out.hasOpt = true;
+            out.optUdpSize = a.cls;
+            out.optVersion = uint8_t(a.ttl >> 16);
+            out.optFlags = uint16_t(a.ttl & 0xFFFFu);
+        }
+        else if (a.type == DnsMessage::kTypeTsig)
+        {
+            out.tsig.present = true;
+            out.tsig.keyName = a.name;
+            out.tsig.algorithm = a.tsigAlgorithm;
+            out.tsig.timeSigned = a.tsigTime;
+            out.tsig.fudge = a.tsigFudge;
+            out.tsig.mac = a.tsigMac;
+            out.tsig.originalId = a.tsigOriginalId;
+            out.tsig.error = a.tsigError;
+            out.tsig.other = a.tsigOther;
+        }
+        else
+        {
+            out.additional.push_back(a);
+        }
     }
 
     return true;
+}
+
+bool DnsMessage::TsigAlgorithmValid(const std::string &algorithm)
+{
+    std::string alg = CanonicalTsigAlgorithm(algorithm);
+    return alg == "hmac-md5.sig-alg.reg.int." || alg == "hmac-sha1." ||
+           alg == "hmac-sha256.";
+}
+
+bool DnsMessage::SignTsig(const std::string &secret,
+                          const std::vector<uint8_t> *requestMac)
+{
+    if(!tsig.present || !TsigAlgorithmValid(tsig.algorithm))
+        return false;
+    std::vector<uint8_t> data = TsigMacInput(*this, tsig, requestMac);
+    if(data.empty())
+        return false;
+    std::vector<uint8_t> mac = TsigHash(tsig.algorithm, secret, data);
+    if(mac.empty())
+        return false;
+    tsig.mac = mac;
+    return true;
+}
+
+bool DnsMessage::VerifyTsig(const std::string &secret,
+                            const std::vector<uint8_t> *requestMac) const
+{
+    if(!tsig.present || tsig.mac.empty() ||
+       !TsigAlgorithmValid(tsig.algorithm))
+        return false;
+    std::vector<uint8_t> data = TsigMacInput(*this, tsig, requestMac);
+    if(data.empty())
+        return false;
+    std::vector<uint8_t> expected = TsigHash(tsig.algorithm, secret, data);
+    if(expected.size() != tsig.mac.size())
+        return false;
+    uint8_t diff = 0;
+    for(std::size_t i = 0; i < expected.size(); ++i)
+        diff |= uint8_t(expected[i] ^ tsig.mac[i]);
+    return diff == 0;
 }

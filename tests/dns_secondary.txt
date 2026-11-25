@@ -1,0 +1,30 @@
+add-device PC1 end
+add-device PRIMARY end
+add-device SECONDARY end
+add-device SW1 switch
+add-port PC1 aa:aa:aa:aa:aa:01 10.0.0.1/24
+add-port PRIMARY aa:aa:aa:aa:aa:02 10.0.0.2/24
+add-port SECONDARY aa:aa:aa:aa:aa:03 10.0.0.3/24
+add-port SW1 aa:00:00:00:00:11
+add-port SW1 aa:00:00:00:00:12
+add-port SW1 aa:00:00:00:00:13
+connect PC1:0 SW1:0
+connect PRIMARY:0 SW1:1
+connect SECONDARY:0 SW1:2
+dns-server PRIMARY on
+dns-zone PRIMARY example.com
+dns-record PRIMARY www.example.com 10.0.0.5
+dns-update-allow PRIMARY 10.0.0.1
+dns-axfr-allow PRIMARY 10.0.0.3
+dns-notify-target PRIMARY example.com 10.0.0.3
+dns-server SECONDARY on
+dns-secondary SECONDARY example.com 10.0.0.2
+run 1000
+dns-query PC1 10.0.0.3 www.example.com A
+run 1000
+dns-update-add PC1 10.0.0.2 example.com host.example.com 10.0.0.9
+run 2000
+dns-query PC1 10.0.0.3 host.example.com A
+run 1000
+dns-query PC1 10.0.0.3 www.example.com A
+run 1000

@@ -1,0 +1,3 @@
+dns: update example.com ok
+dns: update example.com prereq
+dns: update example.com nxdomain

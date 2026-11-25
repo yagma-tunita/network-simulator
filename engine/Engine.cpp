@@ -3,6 +3,8 @@
 
 bool Engine::Step()
 {
+    while(!queue.Empty() && queue.Top()->cancelled)
+        queue.Pop();
     if(queue.Empty()) return false;
 
     std::unique_ptr<Event> ev = queue.Pop();

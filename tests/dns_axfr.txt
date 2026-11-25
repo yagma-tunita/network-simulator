@@ -1,0 +1,16 @@
+add-device PC1 end
+add-device SRV end
+add-port PC1 aa:aa:aa:aa:aa:01 10.0.0.1/24
+add-port SRV aa:aa:aa:aa:aa:02 10.0.0.2/24
+connect PC1:0 SRV:0
+dns-server SRV on
+dns-zone SRV example.com
+dns-ns SRV example.com ns1.example.com
+dns-record SRV ns1.example.com 10.0.0.2
+dns-record SRV host.example.com 10.0.0.5
+dns-aaaa SRV host.example.com 2001:db8::5
+dns-cname SRV www.example.com host.example.com
+dns-mx SRV example.com 10 mail.example.com
+dns-axfr-allow SRV any
+dns-axfr PC1 10.0.0.2 example.com
+run 2000

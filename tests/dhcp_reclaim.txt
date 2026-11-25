@@ -1,0 +1,21 @@
+add-device PC1 end
+add-device PC2 end
+add-device SRV end
+add-device SW1 switch
+add-port PC1 aa:aa:aa:aa:aa:01
+add-port PC2 aa:aa:aa:aa:aa:02
+add-port SRV aa:aa:aa:aa:aa:03 10.0.0.1/24
+add-port SW1 aa:00:00:00:00:11
+add-port SW1 aa:00:00:00:00:12
+add-port SW1 aa:00:00:00:00:13
+connect PC1:0 SW1:0
+connect PC2:0 SW1:1
+connect SRV:0 SW1:2
+dhcp-server SRV on 10.0.0.100 10.0.0.100 24 10.0.0.1 10.0.0.1
+dhcp-lease-time SRV 100
+dhcp-client PC1 0
+run 10
+set-link PC1:0 down
+run 200
+dhcp-client PC2 0
+run 10

@@ -1,0 +1,24 @@
+add-device PC1 end
+add-device PARENT end
+add-device CHILD end
+add-device SW1 switch
+add-port PC1 aa:aa:aa:aa:aa:01 10.0.0.1/24
+add-port PARENT aa:aa:aa:aa:aa:02 10.0.0.2/24
+add-port CHILD aa:aa:aa:aa:aa:03 10.0.0.3/24
+add-port SW1 aa:00:00:00:00:11
+add-port SW1 aa:00:00:00:00:12
+add-port SW1 aa:00:00:00:00:13
+connect PC1:0 SW1:0
+connect PARENT:0 SW1:1
+connect CHILD:0 SW1:2
+dns-server PARENT on
+dns-zone PARENT example.com
+dns-zone PARENT example.net
+dns-ns PARENT sub.example.com ns1.example.net
+dns-record PARENT ns1.example.net 10.0.0.3
+dns-server CHILD on
+dns-zone CHILD sub.example.com
+dns-ns CHILD sub.example.com ns1.example.net
+dns-record CHILD host.sub.example.com 10.0.0.5
+dns-query PC1 10.0.0.2 host.sub.example.com A
+run 1000

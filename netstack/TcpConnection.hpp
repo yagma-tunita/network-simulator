@@ -71,6 +71,7 @@ struct TcpConnection
     uint64_t dsacks = 0;
     std::vector<uint8_t> sendBuf;
     std::size_t sendOff = 0;
+    std::vector<uint8_t> appRx;
 
     uint64_t rto = 50;
     uint64_t rtoMin = 20;

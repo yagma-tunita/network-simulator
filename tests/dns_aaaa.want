@@ -1,0 +1,4 @@
+dns: host.example.com -> 10.0.0.5
+dns: host.example.com -> AAAA 2001:db8::5
+dns: foo.v6.example.com -> AAAA 2001:db8::9
+dns: cached host.example.com -> AAAA 2001:db8::5

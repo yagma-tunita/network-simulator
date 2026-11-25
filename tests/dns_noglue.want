@@ -1,0 +1,3 @@
+dns: referral sub.example.com -> resolve NS ns1.example.net
+dns: referral sub.example.com -> 10.0.0.3
+dns: host.sub.example.com -> 10.0.0.5

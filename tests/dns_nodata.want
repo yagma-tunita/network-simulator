@@ -1,0 +1,4 @@
+dns: host.example -> NODATA
+dns: cached host.example -> NODATA
+dns: cached host.example -> NODATA
+dns: host.example -> NODATA

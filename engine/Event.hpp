@@ -8,6 +8,7 @@ struct Event
 {
     uint64_t time = 0;
     uint64_t seq = 0;
+    bool cancelled = false;
 
     Event() = default;
     Event(const Event&) = delete;

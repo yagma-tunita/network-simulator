@@ -1,0 +1,4 @@
+dns: missing.example -> NXDOMAIN
+dns: cached missing.example -> NXDOMAIN
+dns: cached missing.example -> NXDOMAIN
+dns: missing.example -> NXDOMAIN

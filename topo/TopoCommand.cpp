@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <cctype>
 
 std::vector<std::string> Tokenize(const std::string &line)
 {
@@ -874,6 +875,27 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
             throw std::invalid_argument("dhcp-client port index out of range");
         e->StartDhcpClient(e->portList[idx]);
     }
+    else if (cmd == "dhcp-lease-time")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("dhcp-lease-time <device> <seconds>");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        unsigned long sec = std::stoul(t[2]);
+        if (sec == 0 || sec > 604800)
+            throw std::invalid_argument("dhcp lease time must be 1..604800 seconds");
+        e->SetDhcpLeaseTime(uint32_t(sec));
+    }
+    else if (cmd == "dhcp-release")
+    {
+        if (t.size() != 2)
+            throw std::invalid_argument("dhcp-release <device>");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        e->SendDhcpRelease();
+    }
     else if (cmd == "dhcp-relay")
     {
         if (t.size() != 4)
@@ -903,39 +925,441 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
             throw std::invalid_argument("dns-server <device> on|off");
         e->SetDnsServer(t[2] == "on");
     }
-    else if (cmd == "dns-record")
+    else if (cmd == "dns-ttl")
     {
-        if (t.size() != 4)
-            throw std::invalid_argument("dns-record <device> <name> <ip>");
+        if (t.size() != 3)
+            throw std::invalid_argument("dns-ttl <device> <seconds>");
         EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
         if (!e)
             throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        unsigned long sec = std::stoul(t[2]);
+        if (sec > 86400)
+            throw std::invalid_argument("dns ttl must be 0..86400 seconds");
+        e->SetDnsTtl(uint32_t(sec));
+    }
+    else if (cmd == "dns-negative-ttl")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("dns-negative-ttl <device> <seconds>");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        unsigned long sec = std::stoul(t[2]);
+        if (sec > 86400)
+            throw std::invalid_argument("dns negative ttl must be 0..86400 seconds");
+        e->SetDnsNegativeTtl(uint32_t(sec));
+    }
+    else if (cmd == "dns-cache-size")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("dns-cache-size <device> <entries>");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        unsigned long entries = std::stoul(t[2]);
+        if (entries == 0 || entries > 65536)
+            throw std::invalid_argument("dns cache size must be 1..65536");
+        e->SetDnsCacheLimit(std::size_t(entries));
+    }
+    else if (cmd == "dns-ttl-bounds")
+    {
+        if (t.size() != 4)
+            throw std::invalid_argument("dns-ttl-bounds <device> <min> <max>");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        unsigned long minimum = std::stoul(t[2]);
+        unsigned long maximum = std::stoul(t[3]);
+        if (maximum > 86400 || minimum > maximum)
+            throw std::invalid_argument("dns ttl bounds must satisfy 0 <= min <= max <= 86400");
+        e->SetDnsTtlBounds(uint32_t(minimum), uint32_t(maximum));
+    }
+    else if (cmd == "dns-record")
+    {
+        if (t.size() != 4 && t.size() != 5)
+            throw std::invalid_argument("dns-record <device> <name> <ip> [ttl]");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        uint32_t ttl = e->dnsTtl;
+        if (t.size() == 5)
+        {
+            unsigned long parsed = std::stoul(t[4]);
+            if (parsed > 86400)
+                throw std::invalid_argument("dns record ttl out of range");
+            ttl = uint32_t(parsed);
+        }
         e->AddDnsRecord(t[2], Ipv4(t[3]));
+        e->SetDnsRrTtl(t[2], 1, ttl);
+    }
+    else if (cmd == "dns-aaaa")
+    {
+        if (t.size() != 4 && t.size() != 5)
+            throw std::invalid_argument("dns-aaaa <device> <name> <ipv6> [ttl]");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        Ipv6 ip;
+        if (!Ipv6::TryParse(t[3], ip))
+            throw std::invalid_argument("invalid IPv6 address");
+        uint32_t ttl = e->dnsTtl;
+        if (t.size() == 5)
+        {
+            unsigned long parsed = std::stoul(t[4]);
+            if (parsed > 86400)
+                throw std::invalid_argument("dns AAAA ttl out of range");
+            ttl = uint32_t(parsed);
+        }
+        e->AddDnsAaaa(t[2], ip);
+        e->SetDnsRrTtl(t[2], DnsMessage::kTypeAaaa, ttl);
     }
     else if (cmd == "dns-cname")
     {
-        if (t.size() != 4)
-            throw std::invalid_argument("dns-cname <device> <alias> <target>");
+        if (t.size() != 4 && t.size() != 5)
+            throw std::invalid_argument("dns-cname <device> <alias> <target> [ttl]");
         EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
         if (!e)
             throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        uint32_t ttl = e->dnsTtl;
+        if (t.size() == 5)
+        {
+            unsigned long parsed = std::stoul(t[4]);
+            if (parsed > 86400)
+                throw std::invalid_argument("dns cname ttl out of range");
+            ttl = uint32_t(parsed);
+        }
         e->AddDnsCname(t[2], t[3]);
+        e->SetDnsRrTtl(t[2], 5, ttl);
+    }
+    else if (cmd == "dns-mx")
+    {
+        if (t.size() != 5 && t.size() != 6)
+            throw std::invalid_argument("dns-mx <device> <name> <preference> <exchange> [ttl]");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        unsigned long pref = std::stoul(t[3]);
+        if (pref > 65535)
+            throw std::invalid_argument("dns MX preference out of range");
+        uint32_t ttl = e->dnsTtl;
+        if (t.size() == 6)
+        {
+            unsigned long parsed = std::stoul(t[5]);
+            if (parsed > 86400)
+                throw std::invalid_argument("dns MX ttl out of range");
+            ttl = uint32_t(parsed);
+        }
+        e->AddDnsMx(t[2], uint16_t(pref), t[4]);
+        e->SetDnsRrTtl(t[2], 15, ttl);
+    }
+    else if (cmd == "dns-zone")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("dns-zone <device> <zone>");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        e->AddDnsZone(t[2]);
+    }
+    else if (cmd == "dns-secondary")
+    {
+        if (t.size() != 4)
+            throw std::invalid_argument("dns-secondary <device> <zone> <primary-ip>");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        e->AddDnsSecondary(t[2], Ipv4(t[3]));
+    }
+    else if (cmd == "dns-notify-target")
+    {
+        if (t.size() < 4)
+            throw std::invalid_argument("dns-notify-target <device> <zone> <ip> [ip...]");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        if (t.size() > 11)
+            throw std::invalid_argument("dns-notify-target supports at most 8 addresses");
+        std::vector<Ipv4> targets;
+        for (std::size_t i = 3; i < t.size(); ++i)
+            targets.push_back(Ipv4(t[i]));
+        e->SetDnsNotifyTargets(t[2], targets);
+    }
+    else if (cmd == "dns-notify")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("dns-notify <device> <zone>");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        e->NotifyDnsZone(t[2]);
+    }
+    else if (cmd == "dns-ns")
+    {
+        if (t.size() != 4)
+            throw std::invalid_argument("dns-ns <device> <owner> <nameserver>");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        e->AddDnsNs(t[2], t[3]);
+    }
+    else if (cmd == "dns-soa")
+    {
+        if (t.size() != 5 && t.size() != 11)
+            throw std::invalid_argument("dns-soa <device> <zone> <mname> <rname> [ttl serial refresh retry expire minimum]");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        uint32_t ttl = e->dnsTtl;
+        uint32_t serial = 1;
+        uint32_t refresh = 3600;
+        uint32_t retry = 600;
+        uint32_t expire = 86400;
+        uint32_t minimum = e->dnsNegativeTtl;
+        if (t.size() == 11)
+        {
+            ttl = uint32_t(std::stoul(t[5]));
+            serial = uint32_t(std::stoul(t[6]));
+            refresh = uint32_t(std::stoul(t[7]));
+            retry = uint32_t(std::stoul(t[8]));
+            expire = uint32_t(std::stoul(t[9]));
+            minimum = uint32_t(std::stoul(t[10]));
+        }
+        e->SetDnsSoa(t[2], t[3], t[4], ttl, serial, refresh, retry,
+                     expire, minimum);
     }
     else if (cmd == "dns-query")
     {
-        if (t.size() != 3 && t.size() != 4)
-            throw std::invalid_argument("dns-query <device> [server-ip] <name>");
+        if (t.size() != 3 && t.size() != 4 && t.size() != 5)
+            throw std::invalid_argument("dns-query <device> [server-ip] <name> [A|AAAA|NS|SOA|PTR|MX]");
         EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
         if (!e)
             throw std::invalid_argument("'" + t[1] + "' is not an end device");
-        if (t.size() == 4)
-            e->DnsQuery(Ipv4(t[2]), t[3]);
+
+        uint16_t qtype = DnsMessage::kTypeA;
+        auto parseType = [](const std::string &tok, uint16_t &out) -> bool
+        {
+            std::string ty;
+            for(char c : tok)
+                ty.push_back(char(std::toupper(static_cast<unsigned char>(c))));
+            if (ty == "A" || ty == "1") { out = DnsMessage::kTypeA; return true; }
+            if (ty == "NS" || ty == "2") { out = DnsMessage::kTypeNs; return true; }
+            if (ty == "SOA" || ty == "6") { out = DnsMessage::kTypeSoa; return true; }
+            if (ty == "PTR" || ty == "12") { out = DnsMessage::kTypePtr; return true; }
+            if (ty == "MX" || ty == "15") { out = DnsMessage::kTypeMx; return true; }
+            if (ty == "AAAA" || ty == "28") { out = DnsMessage::kTypeAaaa; return true; }
+            return false;
+        };
+
+        std::string name;
+        bool explicitServer = false;
+        Ipv4 server;
+        if (t.size() == 5)
+        {
+            if (!parseType(t[4], qtype))
+                throw std::invalid_argument("dns query type must be A, AAAA, NS, SOA, PTR or MX");
+            server = Ipv4(t[2]);
+            name = t[3];
+            explicitServer = true;
+        }
+        else if (t.size() == 4)
+        {
+            Ipv4 maybeServer;
+            uint16_t maybeType = DnsMessage::kTypeA;
+            if (!Ipv4::TryParse(t[2], maybeServer) && parseType(t[3], maybeType))
+            {
+                qtype = maybeType;
+                name = t[2];
+            }
+            else
+            {
+                server = Ipv4(t[2]);
+                name = t[3];
+                explicitServer = true;
+            }
+        }
+        else
+            name = t[2];
+
+        if (explicitServer)
+            e->DnsQuery(server, name, qtype);
         else
         {
-            if (!e->hasDnsServer)
-                throw std::invalid_argument("dns-query: no DNS server configured (use dhcp or pass one)");
-            e->DnsQuery(e->dnsServerIp, t[2]);
+            if (e->dnsServers.empty())
+                throw std::invalid_argument("dns-query: no resolver configured (use dns-resolver, dhcp, or pass a server)");
+            e->DnsQuery(name, qtype);
         }
+    }
+    else if (cmd == "dns-axfr")
+    {
+        if (t.size() != 4)
+            throw std::invalid_argument("dns-axfr <device> <server-ip> <zone>");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        e->DnsAxfr(Ipv4(t[2]), t[3]);
+    }
+    else if (cmd == "dns-ixfr")
+    {
+        if (t.size() != 5)
+            throw std::invalid_argument("dns-ixfr <device> <server-ip> <zone> <serial>");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        unsigned long serial = std::stoul(t[4]);
+        e->DnsIxfr(Ipv4(t[2]), t[3], uint32_t(serial));
+    }
+    else if (cmd == "dns-axfr-allow")
+    {
+        if (t.size() < 3)
+            throw std::invalid_argument("dns-axfr-allow <device> <ip> [ip...] | any|none");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        if (t[2] == "any" || t[2] == "none")
+        {
+            if (t.size() != 3)
+                throw std::invalid_argument("dns-axfr-allow <device> any|none");
+            e->SetDnsAxfrAllow({}, t[2] == "any");
+            return;
+        }
+        if (t.size() > 10)
+            throw std::invalid_argument("dns-axfr-allow supports at most 8 addresses");
+        std::vector<Ipv4> allow;
+        for (std::size_t i = 2; i < t.size(); ++i)
+            allow.push_back(Ipv4(t[i]));
+        e->SetDnsAxfrAllow(allow, false);
+    }
+    else if (cmd == "dns-tsig")
+    {
+        if (t.size() != 4 && t.size() != 5)
+            throw std::invalid_argument("dns-tsig <device> <key-name> <secret> [md5|sha1|sha256]");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        std::string alg = (t.size() == 5) ? t[4] : "sha256";
+        for(char &c : alg)
+            c = char(std::tolower(static_cast<unsigned char>(c)));
+        if (alg != "md5" && alg != "sha1" && alg != "sha256" &&
+            alg != "hmac-md5.sig-alg.reg.int." && alg != "hmac-sha1." &&
+            alg != "hmac-sha256.")
+            throw std::invalid_argument("dns-tsig algorithm must be md5, sha1 or sha256");
+        e->AddDnsTsig(t[2], t[3], alg);
+    }
+    else if (cmd == "dns-tsig-require")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("dns-tsig-require <device> on|off");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        if (t[2] != "on" && t[2] != "off")
+            throw std::invalid_argument("dns-tsig-require <device> on|off");
+        e->SetDnsTsigRequired(t[2] == "on");
+    }
+    else if (cmd == "dns-update-allow")
+    {
+        if (t.size() < 3)
+            throw std::invalid_argument("dns-update-allow <device> <ip> [ip...] | any|none");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        if (t[2] == "any" || t[2] == "none")
+        {
+            if (t.size() != 3)
+                throw std::invalid_argument("dns-update-allow <device> any|none");
+            e->SetDnsUpdateAllow({}, t[2] == "any");
+            return;
+        }
+        if (t.size() > 10)
+            throw std::invalid_argument("dns-update-allow supports at most 8 addresses");
+        std::vector<Ipv4> allow;
+        for (std::size_t i = 2; i < t.size(); ++i)
+            allow.push_back(Ipv4(t[i]));
+        e->SetDnsUpdateAllow(allow, false);
+    }
+    else if (cmd == "dns-update-add")
+    {
+        if (t.size() != 6 && t.size() != 7)
+            throw std::invalid_argument("dns-update-add <device> <server-ip> <zone> <name> <ip> [ttl]");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        uint32_t ttl = 60;
+        if (t.size() == 7)
+        {
+            unsigned long parsed = std::stoul(t[6]);
+            if (parsed > 86400)
+                throw std::invalid_argument("dns update ttl out of range");
+            ttl = uint32_t(parsed);
+        }
+        e->DnsUpdateAdd(Ipv4(t[2]), t[3], t[4], Ipv4(t[5]), ttl);
+    }
+    else if (cmd == "dns-update-del")
+    {
+        if (t.size() != 5 && t.size() != 6)
+            throw std::invalid_argument("dns-update-del <device> <server-ip> <zone> <name> [A|ANY]");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        uint16_t type = DnsMessage::kTypeA;
+        if (t.size() == 6)
+        {
+            std::string ty;
+            for(char c : t[5])
+                ty.push_back(char(std::toupper(static_cast<unsigned char>(c))));
+            if (ty == "A")
+                type = DnsMessage::kTypeA;
+            else if (ty == "ANY")
+                type = 255;
+            else
+                throw std::invalid_argument("dns-update-del type must be A or ANY");
+        }
+        e->DnsUpdateDelete(Ipv4(t[2]), t[3], t[4], type);
+    }
+    else if (cmd == "dns-update-check")
+    {
+        if (t.size() != 6)
+            throw std::invalid_argument("dns-update-check <device> <server-ip> <zone> <name> <ip>");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        e->DnsUpdateCheck(Ipv4(t[2]), t[3], t[4], Ipv4(t[5]));
+    }
+    else if (cmd == "dns-resolver")
+    {
+        if (t.size() < 3)
+            throw std::invalid_argument("dns-resolver <device> <ip> [ip...] | off");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        if (t[2] == "off")
+        {
+            if (t.size() != 3)
+                throw std::invalid_argument("dns-resolver <device> off");
+            e->SetDnsResolvers({});
+            return;
+        }
+        if (t.size() > 10)
+            throw std::invalid_argument("dns-resolver supports at most 8 servers");
+        std::vector<Ipv4> servers;
+        for (std::size_t i = 2; i < t.size(); ++i)
+            servers.push_back(Ipv4(t[i]));
+        e->SetDnsResolvers(servers);
+    }
+    else if (cmd == "dns-retry")
+    {
+        if (t.size() != 4)
+            throw std::invalid_argument("dns-retry <device> <timeout> <attempts>");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        unsigned long timeout = std::stoul(t[2]);
+        unsigned long attempts = std::stoul(t[3]);
+        if (timeout == 0 || timeout > 10000)
+            throw std::invalid_argument("dns retry timeout must be 1..10000");
+        if (attempts == 0 || attempts > 10)
+            throw std::invalid_argument("dns retry attempts must be 1..10");
+        e->SetDnsRetry(uint32_t(timeout), uint8_t(attempts));
     }
     else if (cmd == "nat")
     {

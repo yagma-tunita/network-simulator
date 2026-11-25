@@ -1,0 +1,5 @@
+dns: foo.example.com -> 10.0.0.9
+dns: host.example.com -> 10.0.0.5
+dns: x.alias.example.com -> 10.0.0.7
+dns: foo.example.com -> NODATA
+dns: x.mail.example.com -> MX 10 mail.example.com

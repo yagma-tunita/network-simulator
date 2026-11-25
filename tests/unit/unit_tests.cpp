@@ -1,5 +1,6 @@
 #include "core/Ipv4.hpp"
 #include "core/Ipv4Subnet.hpp"
+#include "core/Ipv6.hpp"
 #include "core/Mac.hpp"
 #include "core/ARP.hpp"
 #include "core/IpPacket.hpp"
@@ -13,6 +14,7 @@
 #include "core/OspfPacket.hpp"
 #include "core/Md5.hpp"
 #include "core/Sha.hpp"
+#include "core/Hmac.hpp"
 #include "device/StpBpdu.hpp"
 #include "device/EndDevice.hpp"
 #include "device/Router.hpp"
@@ -406,6 +408,19 @@ static void TestEngineBasics()
     e.ScheduleAfter(1, std::make_unique<CountEvent>(&count));
     e.Run();
     CHECK(traced == 1);
+
+    Engine ce;
+    int ran = 0;
+    ce.ScheduleAt(10, std::make_unique<CountEvent>(&ran));
+    std::unique_ptr<CountEvent> cancelledEv =
+        std::make_unique<CountEvent>(&ran);
+    CountEvent *cancelled = cancelledEv.get();
+    ce.ScheduleAt(50, std::move(cancelledEv));
+    cancelled->cancelled = true;
+    ce.RunUntil(100);
+    CHECK(ran == 1);
+    CHECK(ce.Now() == 10);
+    CHECK(ce.queue.Empty());
 }
 
 static void TestTopologyBuilder()
@@ -869,6 +884,116 @@ static void TestDnsMessage()
     CHECK(out.answers[0].type == 5);
     CHECK(out.answers[0].target == "example.com");
 
+    DnsMessage mx;
+    mx.id = 9;
+    mx.flags = 0x8180;
+    mx.questions.push_back(DnsQuestion{ "example.com", DnsMessage::kTypeMx, 1 });
+    DnsAnswer mxa;
+    mxa.name = "example.com";
+    mxa.type = DnsMessage::kTypeMx;
+    mxa.ttl = 300;
+    mxa.preference = 10;
+    mxa.target = "mail.example.com";
+    mx.answers.push_back(mxa);
+    std::vector<uint8_t> mb = mx.ToBytes();
+    CHECK(DnsMessage::TryFromBytes(mb, out));
+    CHECK(out.answers.size() == 1);
+    CHECK(out.answers[0].type == DnsMessage::kTypeMx);
+    CHECK(out.answers[0].ttl == 300);
+    CHECK(out.answers[0].preference == 10);
+    CHECK(out.answers[0].target == "mail.example.com");
+
+    DnsMessage ptr;
+    ptr.id = 10;
+    ptr.flags = 0x8180;
+    ptr.questions.push_back(DnsQuestion{
+        "5.0.0.10.in-addr.arpa", DnsMessage::kTypePtr, 1 });
+    DnsAnswer pa;
+    pa.name = "5.0.0.10.in-addr.arpa";
+    pa.type = DnsMessage::kTypePtr;
+    pa.target = "host.example.com";
+    ptr.answers.push_back(pa);
+    std::vector<uint8_t> pb = ptr.ToBytes();
+    CHECK(DnsMessage::TryFromBytes(pb, out));
+    CHECK(out.answers.size() == 1);
+    CHECK(out.answers[0].type == DnsMessage::kTypePtr);
+    CHECK(out.answers[0].target == "host.example.com");
+
+    DnsMessage edns;
+    edns.id = 12;
+    edns.flags = 0x0100;
+    edns.questions.push_back(DnsQuestion{ "example.com", DnsMessage::kTypeA, 1 });
+    edns.hasOpt = true;
+    edns.optUdpSize = 1232;
+    std::vector<uint8_t> eb = edns.ToBytes();
+    CHECK(DnsMessage::TryFromBytes(eb, out));
+    CHECK(out.hasOpt);
+    CHECK(out.optUdpSize == 1232);
+
+    DnsMessage referral;
+    referral.id = 13;
+    referral.flags = 0x8180;
+    referral.questions.push_back(DnsQuestion{
+        "host.sub.example.com", DnsMessage::kTypeA, 1 });
+    DnsAnswer ns;
+    ns.name = "sub.example.com";
+    ns.type = DnsMessage::kTypeNs;
+    ns.target = "ns1.sub.example.com";
+    referral.authority.push_back(ns);
+    DnsAnswer glue;
+    glue.name = "ns1.sub.example.com";
+    glue.type = DnsMessage::kTypeA;
+    glue.ttl = 120;
+    glue.ip = Ipv4("10.0.0.3");
+    referral.additional.push_back(glue);
+    std::vector<uint8_t> refb = referral.ToBytes();
+    CHECK(DnsMessage::TryFromBytes(refb, out));
+    CHECK(out.authority.size() == 1);
+    CHECK(out.authority[0].type == DnsMessage::kTypeNs);
+    CHECK(out.authority[0].target == "ns1.sub.example.com");
+    CHECK(out.additional.size() == 1);
+    CHECK(out.additional[0].ip == Ipv4("10.0.0.3"));
+
+    DnsMessage neg;
+    neg.id = 11;
+    neg.flags = 0x8183;
+    neg.questions.push_back(DnsQuestion{ "missing.example", DnsMessage::kTypeA, 1 });
+    DnsAnswer soa;
+    soa.name = "example";
+    soa.type = DnsMessage::kTypeSoa;
+    soa.ttl = 100;
+    soa.mname = "ns.example";
+    soa.rname = "hostmaster.example";
+    soa.minimum = 100;
+    neg.authority.push_back(soa);
+    std::vector<uint8_t> nb = neg.ToBytes();
+    CHECK(DnsMessage::TryFromBytes(nb, out));
+    CHECK(out.Rcode() == 3);
+    CHECK(out.authority.size() == 1);
+    CHECK(out.authority[0].type == DnsMessage::kTypeSoa);
+    CHECK(out.authority[0].ttl == 100);
+    CHECK(out.authority[0].minimum == 100);
+    CHECK(out.authority[0].mname == "ns.example");
+
+    DnsMessage update;
+    update.id = 14;
+    update.flags = 0;
+    update.SetOpcode(5);
+    update.questions.push_back(DnsQuestion{
+        "example.com", DnsMessage::kTypeSoa, 1 });
+    DnsAnswer del;
+    del.name = "host.example.com";
+    del.type = DnsMessage::kTypeA;
+    del.cls = 255;
+    del.noRdata = true;
+    update.authority.push_back(del);
+    std::vector<uint8_t> ub = update.ToBytes();
+    CHECK(DnsMessage::TryFromBytes(ub, out));
+    CHECK(out.Opcode() == 5);
+    CHECK(!out.IsResponse());
+    CHECK(out.authority.size() == 1);
+    CHECK(out.authority[0].noRdata);
+
     CHECK(!DnsMessage::TryFromBytes(std::vector<uint8_t>(5, 0), out));
 
     DnsMessage badq;
@@ -906,6 +1031,90 @@ static void TestRipMessage()
     std::vector<uint8_t> ib = inf.ToBytes();
     CHECK(RipMessage::TryFromBytes(ib, out));
     CHECK(out.entries[0].metric == 16);
+}
+
+static void TestIpv6()
+{
+    Ipv6 v;
+    CHECK(Ipv6::TryParse("2001:db8::1", v));
+    CHECK(v.ToString() == "2001:db8::1");
+    CHECK(Ipv6::TryParse("::1", v));
+    CHECK(v.ToString() == "::1");
+    CHECK(Ipv6::TryParse("::", v));
+    CHECK(v.IsAny());
+    CHECK(v.ToString() == "::");
+    CHECK(Ipv6::TryParse(
+        "2001:0db8:0000:0000:0000:0000:0000:0001", v));
+    CHECK(v.ToString() == "2001:db8::1");
+    CHECK(Ipv6::TryParse("::ffff:192.0.2.1", v));
+    CHECK(v.ToString() == "::ffff:c000:201");
+
+    CHECK(!Ipv6::TryParse("1::2::3", v));
+    CHECK(!Ipv6::TryParse("12345::", v));
+    CHECK(!Ipv6::TryParse("1:2:3:4:5:6:7:8:9", v));
+
+    DnsMessage r;
+    r.id = 20;
+    r.flags = 0x8180;
+    r.questions.push_back(DnsQuestion{
+        "host.example.com", DnsMessage::kTypeAaaa, 1 });
+    DnsAnswer a;
+    a.name = "host.example.com";
+    a.type = DnsMessage::kTypeAaaa;
+    a.ttl = 120;
+    CHECK(Ipv6::TryParse("2001:db8::5", a.ip6));
+    r.answers.push_back(a);
+
+    std::vector<uint8_t> bytes = r.ToBytes();
+    DnsMessage out;
+    CHECK(DnsMessage::TryFromBytes(bytes, out));
+    CHECK(out.answers.size() == 1);
+    CHECK(out.answers[0].type == DnsMessage::kTypeAaaa);
+    CHECK(out.answers[0].ttl == 120);
+    CHECK(out.answers[0].ip6.ToString() == "2001:db8::5");
+}
+
+static void TestHmacTsig()
+{
+    auto hex = [](const std::vector<uint8_t> &v)
+    {
+        static const char *digits = "0123456789abcdef";
+        std::string out;
+        for(uint8_t b : v)
+        {
+            out.push_back(digits[b >> 4]);
+            out.push_back(digits[b & 0x0F]);
+        }
+        return out;
+    };
+
+    std::vector<uint8_t> key{ 'J', 'e', 'f', 'e' };
+    std::string text = "what do ya want for nothing?";
+    std::vector<uint8_t> data(text.begin(), text.end());
+    CHECK(hex(HmacMd5(key, data)) ==
+          "750c783e6ab0b503eaa86e310a5db738");
+    CHECK(hex(HmacSha256(key, data)) ==
+          "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+
+    DnsMessage q;
+    q.id = 42;
+    q.flags = 0x0100;
+    q.questions.push_back(DnsQuestion{ "example.com", DnsMessage::kTypeAxfr, 1 });
+    q.tsig.present = true;
+    q.tsig.keyName = "key1";
+    q.tsig.algorithm = "hmac-sha256";
+    q.tsig.timeSigned = 100;
+    q.tsig.fudge = 300;
+    q.tsig.originalId = 42;
+    CHECK(q.SignTsig("s3cret"));
+
+    std::vector<uint8_t> bytes = q.ToBytes();
+    DnsMessage parsed;
+    CHECK(DnsMessage::TryFromBytes(bytes, parsed));
+    CHECK(parsed.tsig.present);
+    CHECK(parsed.tsig.algorithm == "hmac-sha256");
+    CHECK(parsed.VerifyTsig("s3cret"));
+    CHECK(!parsed.VerifyTsig("wrong"));
 }
 
 static void TestOspfPacket()
@@ -1689,6 +1898,8 @@ int main()
     TestTcpSegment();
     TestDhcpMessage();
     TestDnsMessage();
+    TestIpv6();
+    TestHmacTsig();
     TestRipMessage();
     TestOspfPacket();
     TestMd5();

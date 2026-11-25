@@ -1,0 +1,15 @@
+add-device PC1 end
+add-device SRV end
+add-port PC1 aa:aa:aa:aa:aa:01 10.0.0.1/24
+add-port SRV aa:aa:aa:aa:aa:02 10.0.0.2/24
+connect PC1:0 SRV:0
+dns-server SRV on
+dns-zone SRV example.com
+dns-record SRV host.example.com 10.0.0.5
+dns-update-allow SRV 10.0.0.1
+dns-update-check PC1 10.0.0.2 example.com host.example.com 10.0.0.5
+run 1000
+dns-update-check PC1 10.0.0.2 example.com host.example.com 10.0.0.6
+run 1000
+dns-update-check PC1 10.0.0.2 example.com missing.example.com 10.0.0.5
+run 1000

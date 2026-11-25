@@ -1,0 +1,17 @@
+add-device PC1 end
+add-device SRV end
+add-port PC1 aa:aa:aa:aa:aa:01 10.0.0.1/24
+add-port SRV aa:aa:aa:aa:aa:02 10.0.0.2/24
+connect PC1:0 SRV:0
+dns-server SRV on
+dns-ttl SRV 300
+dns-ttl-bounds PC1 50 100
+dns-record SRV a.example 10.0.0.1
+dns-query PC1 10.0.0.2 a.example
+wait 10
+dns-server SRV off
+dns-query PC1 10.0.0.2 a.example
+dns-server SRV on
+wait 100
+dns-query PC1 10.0.0.2 a.example
+run

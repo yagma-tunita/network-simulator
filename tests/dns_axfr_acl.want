@@ -1,0 +1,7 @@
+dns: axfr example.com begin
+dns: axfr example.com failed
+dns: axfr example.com begin
+dns: axfr SOA example.com ns.example.com hostmaster.example.com
+dns: axfr A host.example.com 10.0.0.5
+dns: axfr SOA example.com ns.example.com hostmaster.example.com
+dns: axfr example.com complete 3

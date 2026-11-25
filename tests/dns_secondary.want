@@ -1,0 +1,7 @@
+dns: secondary example.com updated serial 1
+dns: www.example.com -> 10.0.0.5
+dns: update example.com ok
+dns: secondary example.com updated serial 2
+dns: host.example.com -> 10.0.0.9
+dns: www.example.com -> 10.0.0.5
+dns: secondary example.com up-to-date serial 2

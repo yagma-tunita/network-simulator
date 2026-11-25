@@ -1,0 +1,4 @@
+dns: example.com -> NS ns1.example.com
+dns: example.com -> SOA ns.example.com hostmaster.example.com
+dns: referral sub.example.com -> 10.0.0.3
+dns: host.sub.example.com -> 10.0.0.5
