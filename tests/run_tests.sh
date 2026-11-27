@@ -42,5 +42,5 @@ if [ -x ./netsim ]; then
     bash tests/examples.sh || status=1
 fi
 
-rm -f tests/netsim_test.pcap tests/netsim_tcp_test.pcap tests/netsim_saved.yn tests/netsim_ipv6_saved.yn tests/netsim_acl_saved.yn tests/netsim_acl6_saved.yn tests/netsim_nat_saved.yn tests/netsim_span_saved.yn
+rm -f tests/netsim_test.pcap tests/netsim_tcp_test.pcap tests/netsim_saved.yn tests/netsim_ipv6_saved.yn tests/netsim_acl_saved.yn tests/netsim_acl6_saved.yn tests/netsim_nat_saved.yn tests/netsim_span_saved.yn tests/netsim_bgp_saved.yn
 exit "$status"

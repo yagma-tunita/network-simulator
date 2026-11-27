@@ -4,7 +4,7 @@ GO ?= go
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -O2 -I.
 CXXFLAGS += -DHAVE_LUA -Ithird_party/lua
 
-LIB_SRCS := $(wildcard core/*.cpp) $(wildcard device/*.cpp) $(wildcard link/*.cpp) $(wildcard engine/*.cpp) $(wildcard topo/*.cpp) $(wildcard netstack/*.cpp)
+LIB_SRCS := $(wildcard core/*.cpp) $(wildcard device/*.cpp) $(wildcard device/end/*.cpp) $(wildcard device/router/*.cpp) $(wildcard link/*.cpp) $(wildcard engine/*.cpp) $(wildcard topo/*.cpp) $(wildcard netstack/*.cpp)
 CLI_SRCS := app/main.cpp app/LineEditor.cpp script/LuaScript.cpp
 LUA_SRCS := $(wildcard third_party/lua/*.c)
 LUA_OBJS := $(patsubst third_party/lua/%.c,build/win/lua/%.o,$(LUA_SRCS))

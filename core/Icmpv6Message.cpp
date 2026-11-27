@@ -148,3 +148,22 @@ bool NdpParseLinkLayerOption(const std::vector<uint8_t> &options,
     }
     return false;
 }
+
+Ipv6 NdpSolicitedNode(const Ipv6 &target)
+{
+    Ipv6 out;
+    out.bytes[0] = 0xFF;
+    out.bytes[1] = 0x02;
+    out.bytes[11] = 0x01;
+    out.bytes[12] = 0xFF;
+    out.bytes[13] = target.bytes[13];
+    out.bytes[14] = target.bytes[14];
+    out.bytes[15] = target.bytes[15];
+    return out;
+}
+
+Mac NdpSolicitedMac(const Ipv6 &target)
+{
+    return Mac(0x33, 0x33, 0xFF, target.bytes[13],
+               target.bytes[14], target.bytes[15]);
+}

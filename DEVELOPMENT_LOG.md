@@ -2007,6 +2007,175 @@ Conventions:
 
 ---
 
+## Phase 123 — BGP wire codec groundwork (2026-11-27)
+
+- Added `BgpMessage` with the 19-byte BGP header and OPEN, UPDATE, KEEPALIVE,
+  and NOTIFICATION encode/decode.
+- UPDATE supports IPv4 NLRI and withdrawn prefixes plus ORIGIN, AS_PATH,
+  NEXT_HOP, LOCAL_PREF, and MED path attributes; oversized attributes use the
+  extended-length flag.
+- Added unit checks for all message types, path attributes, prefix parsing, and
+  invalid markers. BGP sessions, TCP port 179, route propagation, and best-path
+  selection remain future work.
+- Tests: 508 unit checks, 124 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 57.9% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 124 — BGP configuration and local RIB (2026-11-27)
+
+- Added BGP control-plane configuration: enable/disable, local AS, router ID,
+  neighbors, and local networks.
+- Added `bgp-path` offline path injection for deterministic RIB testing and a
+  local best-path selector (local-pref, AS-path length, origin, MED, eBGP,
+  router ID/peer tie-break).
+- Added `bgp-status` with neighbors, path count, and selected RIB.
+- Added the `bgp_config` scenario and BGP selection unit checks. BGP-over-TCP
+  sessions and UPDATE propagation remain future work.
+- Tests: 512 unit checks, 125 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 58.1% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 125 — BGP-over-TCP sessions (2026-11-27)
+
+- Routers now run a minimal TCP/BGP endpoint: listeners on port 179 plus active
+  sessions selected deterministically by lower local interface IP.
+- OPEN/validation, KEEPALIVE handshake, Established state, and UPDATE exchange
+  feed received prefixes into the local BGP RIB/best-path selector.
+- `bgp-status` reports OpenSent/OpenConfirm/Established sessions; the
+  `bgp_session` scenario verifies a two-router eBGP session and reciprocal RIBs.
+- Periodic keepalive/hold timers, withdrawal processing, BGP route installation,
+  and policy remain future work. NAT forwarding on non-179 router TCP ports was
+  kept unchanged.
+- Tests: 512 unit checks, 126 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 57.8% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 126 — BGP route installation and withdrawal (2026-11-27)
+
+- Selected BGP paths are now installed as `bgp` routes in the forwarding table;
+  best-path changes replace prior BGP routes and `BgpSelect` is re-run on
+  connected-route rebuilds.
+- UPDATE withdrawals and peer reset/teardown remove matching paths; duplicate
+  advertisements from the same peer replace the old path rather than stacking.
+- Existing RIP/OSPF cleanup paths preserve BGP routes.
+- Extended `bgp_session` with hosts and a cross-AS ping; the test now verifies
+  end-to-end forwarding over BGP-learned routes.
+- Tests: 512 unit checks, 126 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 57.7% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 127 — BGP keepalive and hold timers (2026-11-27)
+
+- Established BGP sessions schedule a 30-second KEEPALIVE timer and track the
+  last received message; 90 seconds of silence tears the session down and
+  withdraws its routes.
+- Timer events are generation- and router-guarded so configuration restarts or
+  session teardown cannot touch stale session pointers.
+- Added the `bgp_hold` scenario (session established, link down, hold expiry,
+  RIB/route withdrawal).
+- Tests: 512 unit checks, 127 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 57.8% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 128 — Code-health refactor (2026-11-27)
+
+- Moved BGP session/TCP transport out of `Router.cpp` into
+  `device/RouterBgp.cpp`; Router.cpp dropped from about 1.47k to 1.15k lines.
+- Removed the inactive OSPF virtual-link scaffolding left from an abandoned
+  attempt (unused fields, helpers, branches, and virtual-link packet paths).
+- Consolidated duplicated solicited-node IPv6 address/MAC helpers into
+  `Icmpv6Message` (`NdpSolicitedNode`/`NdpSolicitedMac`).
+- No protocol behavior changes; all existing scenarios and unit checks remain
+  green. Full-source line count is unchanged in aggregate, but large
+  translation units and dead paths are reduced.
+- Tests: 512 unit checks, 127 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 57.2% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 129 — Device subfolder decomposition (2026-11-27)
+
+- Moved DNS implementation out of `EndDevice.cpp` into
+  `device/end/EndDeviceDns.cpp`; EndDevice.cpp fell from roughly 5.35k to 2.01k
+  lines. DNS helpers and retry/secondary events now live beside the DNS code.
+- Added `device/end/*.cpp` discovery to Makefile/Makefile.win and coverage
+  object/gcov collection; CMake already globbed recursively.
+- No protocol behavior changes; all existing scenarios and unit checks remain
+  green.
+- Tests: 512 unit checks, 127 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 56.3% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 130 — Router implementation subfolder (2026-11-27)
+
+- Moved `RouterOspf.cpp`, `RouterDhcp.cpp`, and `RouterBgp.cpp` under
+  `device/router/`; includes, Makefiles, and coverage discovery were updated.
+- This groups Router-domain implementations while keeping the shared
+  `Router.hpp/.cpp` interface stable. No behavior changes.
+- Current largest source units: `EndDeviceDns.cpp` (3.36k), `TopoCommand.cpp`
+  (2.32k), `RouterOspf.cpp` (2.04k), `EndDevice.cpp` (2.01k),
+  `TcpConnection.cpp` (1.51k).
+- Tests: 512 unit checks, 127 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 56.3% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 131 — BGP reconnect and passive relisten (2026-11-27)
+
+- Active BGP sessions now schedule a bounded 30-second reconnect after hold
+  expiry/reset; passive listeners relisten on the same local address.
+- Reconnect events carry router/session generations so stale events cannot
+  touch rebuilt sessions; learned paths are withdrawn immediately on failure.
+- Added `bgp_reconnect`: establish, link down, hold expiry, link up, automatic
+  session recovery, and successful forwarding over restored BGP routes.
+- Tests: 512 unit checks, 128 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 56.3% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 132 — BGP local-preference and MED policy (2026-11-27)
+
+- Added per-neighbor inbound `local-pref` policy and per-prefix outbound MED.
+- Received paths retain the wire local-pref so policy changes can be reapplied;
+  `bgp-local-pref` re-runs best-path selection immediately.
+- Outbound UPDATEs include configured MED attributes.
+- Added the two-provider `bgp_localpref` scenario selecting the higher
+  local-preference path.
+- Tests: 512 unit checks, 129 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 56.1% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 133 — BGP configuration persistence (2026-11-27)
+
+- `.yn` save files now include BGP enablement, local AS/router ID, neighbors,
+  networks, inbound local-preference, and outbound MED settings.
+- Load replays BGP config before `bgp on`, then starts sessions through the
+  normal path.
+- Extended `bgp_session` to save, `new`, reload, re-establish the session, and
+  verify cross-AS forwarding.
+- Tests: 512 unit checks, 129 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 56.1% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
 ## Validation approach (2026-11-20)
 
 Each increment was verified with small, focused tests compiled against the

@@ -62,4 +62,5 @@ Remove-Item (Join-Path $root 'tests\netsim_acl_saved.yn') -Force -ErrorAction Si
 Remove-Item (Join-Path $root 'tests\netsim_acl6_saved.yn') -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $root 'tests\netsim_nat_saved.yn') -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $root 'tests\netsim_span_saved.yn') -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $root 'tests\netsim_bgp_saved.yn') -Force -ErrorAction SilentlyContinue
 exit $status

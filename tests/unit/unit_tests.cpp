@@ -4,6 +4,7 @@
 #include "core/Ipv6Subnet.hpp"
 #include "core/Ipv6Packet.hpp"
 #include "core/Icmpv6Message.hpp"
+#include "core/BgpMessage.hpp"
 #include "core/Mac.hpp"
 #include "core/ARP.hpp"
 #include "core/IpPacket.hpp"
@@ -1217,6 +1218,78 @@ static void TestIpv6Packet()
     CHECK(mac == Mac("aa:bb:cc:dd:ee:ff"));
 }
 
+static void TestBgpMessage()
+{
+    BgpMessage open;
+    open.type = BgpMessage::Open;
+    open.version = 4;
+    open.myAs = 65001;
+    open.holdTime = 90;
+    open.bgpId = Ipv4("1.1.1.1");
+    std::vector<uint8_t> b = open.ToBytes();
+    BgpMessage out;
+    CHECK(BgpMessage::TryFromBytes(b, out));
+    CHECK(out == open);
+
+    BgpMessage keep;
+    keep.type = BgpMessage::Keepalive;
+    b = keep.ToBytes();
+    CHECK(BgpMessage::TryFromBytes(b, out));
+    CHECK(out == keep);
+
+    BgpMessage update;
+    update.type = BgpMessage::Update;
+    update.withdrawn.push_back(Ipv4Subnet(Ipv4("10.0.0.0"), 8));
+    update.nlri.push_back(Ipv4Subnet(Ipv4("192.0.2.0"), 24));
+    update.origin = 0;
+    update.asPath = { 65001, 65002 };
+    update.nextHop = Ipv4("10.0.0.1");
+    update.hasLocalPref = true;
+    update.localPref = 100;
+    update.hasMed = true;
+    update.med = 50;
+    b = update.ToBytes();
+    CHECK(BgpMessage::TryFromBytes(b, out));
+    CHECK(out == update);
+    CHECK(out.nlri.size() == 1);
+    CHECK(out.nlri[0].prefix == 24);
+
+    BgpMessage note;
+    note.type = BgpMessage::Notification;
+    note.errorCode = 6;
+    note.errorSubcode = 2;
+    note.data = { 1, 2, 3 };
+    b = note.ToBytes();
+    CHECK(BgpMessage::TryFromBytes(b, out));
+    CHECK(out == note);
+
+    b[0] = 0;
+    CHECK(!BgpMessage::TryFromBytes(b, out));
+}
+
+static void TestBgpSelection()
+{
+    Router r;
+    BgpPath a;
+    a.prefix = Ipv4Subnet(Ipv4("203.0.113.0"), 24);
+    a.nextHop = Ipv4("10.0.0.2");
+    a.peer = Ipv4("10.0.0.2");
+    a.localPref = 100;
+    a.asPath = { 65002 };
+    r.BgpAddPath(a);
+    CHECK(r.bgpRib.size() == 1);
+    CHECK(r.bgpRib[0].peer == a.peer);
+
+    BgpPath b = a;
+    b.peer = Ipv4("10.0.0.3");
+    b.nextHop = Ipv4("10.0.0.3");
+    b.localPref = 200;
+    b.asPath = { 65002, 65010 };
+    r.BgpAddPath(b);
+    CHECK(r.bgpRib.size() == 1);
+    CHECK(r.bgpRib[0].peer == b.peer);
+}
+
 static void TestHmacTsig()
 {
     auto hex = [](const std::vector<uint8_t> &v)
@@ -2246,6 +2319,8 @@ int main()
     TestDnsMessage();
     TestIpv6();
     TestIpv6Packet();
+    TestBgpMessage();
+    TestBgpSelection();
     TestHmacTsig();
     TestRipMessage();
     TestOspfPacket();

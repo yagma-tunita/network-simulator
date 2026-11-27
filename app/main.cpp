@@ -172,6 +172,7 @@ static void RunInteractive(CommandContext &ctx)
             "rename-device", "set-ip", "state", "set-gateway", "set-gateway6", "arp", "ping",
             "run", "wait", "step", "trace", "lookup", "bench", "pcap", "save", "load",
             "new", "demo", "help", "quit", "exit", "acl6",
+            "bgp", "bgp-as", "bgp-router-id", "bgp-neighbor", "bgp-network", "bgp-local-pref", "bgp-med", "bgp-path", "bgp-status",
             "ping6", "set-ip6",
             "devices", "links", "ports", "routes", "routes6", "arp-table", "nd6-table", "mac-table",
             "traceroute", "traceroute6", "export", "udp-echo", "udp-send", "map", "generate",

@@ -154,6 +154,12 @@ comment-free; all documentation lives in this README and `DEVELOPMENT_LOG.md`.
   (`ospf-redistribute`), area range summaries (`ospf-summary`), stub and
   NSSA areas (`ospf-area-type`) with Type 7 translation, interface cost/passive
   policy, and simple-password, MD5, SHA-1 or SHA-256 authentication (`ospf-auth`).
+- BGP over TCP: configured eBGP neighbors establish active/passive sessions on
+  TCP 179, exchange OPEN/KEEPALIVE and UPDATE messages, install selected
+  prefixes into the forwarding table, run 30-second keepalive / 90-second hold
+  timers, and reconnect after session failure. Withdrawals and peer-down events
+  remove paths; per-neighbor local-preference and outbound MED policy are
+  supported, with broader policy still future work.
 - Link impairment (`set-link ... loss/dup/jitter/mtu/clear`) for reliability
   testing and MTU-driven fragmentation.
 - Per-router ACLs (in/out, allow/deny by source/destination prefix and protocol).
@@ -236,11 +242,16 @@ Internet/
 ├── device/                  # networked devices and interfaces
 │   ├── Device.hpp / .cpp    # abstract base
 │   ├── ArpAgent.hpp / .cpp  # shared ARP cache + request/reply
-│   ├── EndDevice.hpp / .cpp # host
+│   ├── EndDevice.hpp / .cpp # host core (IP/IPv6/TCP/DHCP)
+│   ├── end/
+│   │   └── EndDeviceDns.cpp # DNS client/server, zones, cache, AXFR/IXFR
 │   ├── Switch.hpp / .cpp    # Layer-2 switch (+ STP)
 │   ├── StpBpdu.hpp / .cpp   # 802.1D Configuration BPDU codec
 │   ├── Router.hpp / .cpp    # Layer-3 router
-│   ├── RouterOspf.cpp       # OSPF state/LSDB/SPF/ABR (same Router class)
+│   ├── router/
+│   │   ├── RouterOspf.cpp   # OSPF state/LSDB/SPF/ABR
+│   │   ├── RouterDhcp.cpp   # DHCP relay
+│   │   └── RouterBgp.cpp    # BGP sessions/transport
 │   ├── FrameDelivery.hpp / .cpp # frame-delivery event
 │   └── Port.hpp / .cpp
 ├── engine/                  # simulation engine
@@ -828,6 +839,15 @@ ospf-summary <router> <area-id> <prefix> [not-advertise] | clear
 ospf-external <router> <ip/prefix> [metric]|clear  # Type 5 external route
 ospf-default-originate <router> on|off [metric] [type1|type2]
 ospf-redistribute <router> connected|static|off [metric] [type1|type2]
+bgp        <router> on|off                     # BGP control-plane config
+bgp-as     <router> <asn>                      # local AS
+bgp-router-id <router> <ip>                    # BGP router ID
+bgp-neighbor <router> <ip> <remote-as>         # configured BGP neighbor
+bgp-network <router> <prefix>                  # local advertised network
+bgp-local-pref <router> <neighbor> <value>     # inbound local preference
+bgp-med    <router> <prefix> <value>           # outbound MED
+bgp-path   <router> <peer> <prefix> <next-hop> <asn...>  # offline path injection
+bgp-status <router>                            # neighbors, paths, selected RIB
 tcp-lite-echo   <device> on|off [port]          # deprecated (NOT TCP)
 tcp-lite-echo-client <device> <ip> <port> <text...>
 acl        <router> in|out allow|deny <src/p> <dst/p> <proto|any>
@@ -912,7 +932,7 @@ runaway scripts. `--no-lua` disables Lua entirely.
 - `pcap <file>` captures every frame transmitted on a link into a standard pcap
   file (Ethernet link type); `pcap off` stops and reports the frame count.
 - `save <file.yn>` exports the scene (devices, ports incl. IPv6 addresses, links,
-  STP/SPAN, IPv4/IPv6 routes, gateways, ACLs, NAT) to a `.yn` file (JSON content);
+  STP/SPAN, IPv4/IPv6 routes, gateways, ACLs, NAT, BGP config) to a `.yn` file;
   `load` replays it. Scenes may
   also carry an optional `layout` array (ignored by the CLI). See `tests/config.yn`.
 - `run [duration]` advances at most `duration` time units (default 1000) or until
@@ -926,7 +946,7 @@ Three layers of tests, all runnable with `make test`:
 - `tests/unit/unit_tests.cpp` — unit tests for the codecs and addressing
   (`Ipv4`, `Ipv4Subnet`, `Mac`, `ARP`, `IpPacket`, `IcmpMessage`,
   `EthernetFrame` incl. 802.1Q), TCP option/reliability/PMTU behaviour and OSPF
-  packet/LSA checksums (497 checks), built with `-Werror` + ASan/UBSan.
+  packet/LSA checksums (512 checks), built with `-Werror` + ASan/UBSan.
 - `tests/fuzz_parsers.cpp` — deterministic fuzzing of every byte parser; must
   stay ASan/UBSan-clean.
 - `tests/*.txt` scenarios — each `NAME.txt` is a scene and `NAME.want` a substring
@@ -1181,6 +1201,8 @@ Implemented:
 - [x] IPv6 host addressing, NDP, ICMPv6 `ping6`/traceroute/errors, `nd6-table`,
       connected/static routing, IPv6 ACLs, and router forwarding
 - [x] IPv4/IPv6 ACLs with ordered in/out allow/deny rules; ACL/NAT persistence
+- [x] BGP wire codec, TCP peering, UPDATE-to-RIB, keepalive/hold timers,
+      best-path selection, and route installation/withdrawal
 - [x] TCP PMTU decrease with re-segmentation and basic upward re-probing
 - [x] Hard resource caps (topology, event queue, pcap, scripts, scenes)
 - [x] Interactive line editing, history, and Tab completion
@@ -1223,6 +1245,7 @@ Planned:
 - [ ] TCP: reference-stack capture corpus for offline PCAP conformance (no live
       networking or TAP bridge).
 - [ ] OSPF virtual links, IPv6 OSPFv3, full RSTP.
+- [ ] BGP advanced routing policy (filters/communities/AS-path policy).
 - [ ] Scale/engineering: `--jobs` parallel scenarios, `src/` restructure, CMake
       presets, three-platform CI.
 - [ ] Full IEEE 802.1w proposal/agreement (current RSTP mode is a rapid subset)

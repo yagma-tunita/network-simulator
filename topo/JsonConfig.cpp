@@ -345,6 +345,64 @@ bool SaveTopologyJson(const Topology &topo, const std::string &path,
     }
     out << "],\n";
 
+    out << "  \"bgp\": [";
+    first = true;
+    for(const auto &kv : topo.devices)
+    {
+        const Router *r = dynamic_cast<const Router *>(kv.second.get());
+        if(!r)
+            continue;
+        bool any = r->bgpEnabled || r->bgpLocalAs != 0 ||
+                   !(r->bgpRouterId == Ipv4::Any()) ||
+                   !r->bgpNeighbors.empty() || !r->bgpNetworks.empty() ||
+                   !r->bgpLocalPrefIn.empty() || !r->bgpMedOut.empty();
+        if(!any)
+            continue;
+        if(!first) out << ",";
+        first = false;
+        out << "{\"router\":" << Quote(kv.first)
+            << ",\"enabled\":" << (r->bgpEnabled ? "true" : "false")
+            << ",\"as\":" << r->bgpLocalAs
+            << ",\"id\":" << Quote(r->bgpRouterId.ToString())
+            << ",\"neighbors\":[";
+        bool nf = true;
+        for(const auto &n : r->bgpNeighbors)
+        {
+            if(!nf) out << ",";
+            nf = false;
+            out << "{\"ip\":" << Quote(n.first.ToString())
+                << ",\"as\":" << n.second << "}";
+        }
+        out << "],\"networks\":[";
+        bool nwf = true;
+        for(const Ipv4Subnet &net : r->bgpNetworks)
+        {
+            if(!nwf) out << ",";
+            nwf = false;
+            out << Quote(net.ToString());
+        }
+        out << "],\"localPref\":[";
+        bool lf = true;
+        for(const auto &p : r->bgpLocalPrefIn)
+        {
+            if(!lf) out << ",";
+            lf = false;
+            out << "{\"ip\":" << Quote(p.first.ToString())
+                << ",\"value\":" << p.second << "}";
+        }
+        out << "],\"med\":[";
+        bool mf = true;
+        for(const auto &m : r->bgpMedOut)
+        {
+            if(!mf) out << ",";
+            mf = false;
+            out << "{\"prefix\":" << Quote(m.first.ToString())
+                << ",\"value\":" << m.second << "}";
+        }
+        out << "]}";
+    }
+    out << "],\n";
+
     out << "  \"links\": [";
     first = true;
     for(const auto &lp : topo.links)
@@ -639,6 +697,57 @@ bool ParseConfigJson(const std::string &path, std::vector<std::string> &cmds,
         for(const auto &s : span->arr)
             cmds.push_back("span " + s.S("switch") + " " + s.S("src") +
                            " " + s.S("dst"));
+
+    const JVal *bgp = root.Get("bgp");
+    if(bgp && bgp->type == JVal::Arr)
+    {
+        for(const auto &b : bgp->arr)
+        {
+            std::string router = b.S("router");
+            if(router.empty())
+                continue;
+            unsigned long long asn = (unsigned long long)b.N("as", 0);
+            if(asn != 0)
+                cmds.push_back("bgp-as " + router + " " +
+                               std::to_string(asn));
+            std::string id = b.S("id");
+            if(!id.empty())
+                cmds.push_back("bgp-router-id " + router + " " + id);
+
+            const JVal *neighbors = b.Get("neighbors");
+            if(neighbors && neighbors->type == JVal::Arr)
+                for(const auto &n : neighbors->arr)
+                    cmds.push_back("bgp-neighbor " + router + " " +
+                                   n.S("ip") + " " +
+                                   std::to_string((unsigned long long)
+                                                  n.N("as", 0)));
+
+            const JVal *networks = b.Get("networks");
+            if(networks && networks->type == JVal::Arr)
+                for(const auto &n : networks->arr)
+                    if(n.type == JVal::Str)
+                        cmds.push_back("bgp-network " + router + " " + n.str);
+
+            const JVal *localPref = b.Get("localPref");
+            if(localPref && localPref->type == JVal::Arr)
+                for(const auto &p : localPref->arr)
+                    cmds.push_back("bgp-local-pref " + router + " " +
+                                   p.S("ip") + " " +
+                                   std::to_string((unsigned long long)
+                                                  p.N("value", 0)));
+
+            const JVal *med = b.Get("med");
+            if(med && med->type == JVal::Arr)
+                for(const auto &m : med->arr)
+                    cmds.push_back("bgp-med " + router + " " +
+                                   m.S("prefix") + " " +
+                                   std::to_string((unsigned long long)
+                                                  m.N("value", 0)));
+
+            if(b.B("enabled", false))
+                cmds.push_back("bgp " + router + " on");
+        }
+    }
 
     const JVal *lay = root.Get("layout");
     if(lay && lay->type == JVal::Arr)

@@ -91,6 +91,35 @@ Initial product build.
   frames received on a source port to a monitor port using normal egress
   VLAN/STP handling.
 - SPAN mirroring configuration now persists through `save`/`load`.
+- BGP wire-codec groundwork: OPEN/UPDATE/KEEPALIVE/NOTIFICATION, IPv4
+  NLRI/withdrawals, and AS_PATH/NEXT_HOP/LOCAL_PREF/MED path attributes.
+- BGP control-plane groundwork: local AS/router ID, neighbors, advertised
+  networks, offline path injection, and a local RIB with basic best-path
+  selection.
+- BGP over TCP: active/passive sessions on port 179, OPEN/KEEPALIVE exchange,
+  UPDATE propagation into the local RIB, and `bgp-status` session states.
+  Periodic timers, withdrawals, route installation, and policy are pending.
+- BGP route installation: selected paths are installed into the forwarding
+  table; UPDATE withdrawals and peer-down events remove them. The `bgp_session`
+  scenario now pings across an eBGP-learned route.
+- BGP timers: 30-second KEEPALIVE and 90-second hold timers; expired sessions
+  are torn down and their learned routes withdrawn (`bgp_hold` scenario).
+- BGP reconnect: active sessions retry after failure while passive listeners
+  relisten; `bgp_reconnect` verifies link-down, hold expiry, recovery, and
+  restored forwarding.
+- BGP policy: per-neighbor inbound local-preference and per-prefix outbound MED
+  (`bgp-local-pref`, `bgp-med`), with a two-provider `bgp_localpref` scenario.
+- BGP configuration persistence: AS/router ID, neighbors, networks, local-pref,
+  MED, and enabled state round-trip through `save`/`load`; `bgp_session` now
+  saves, resets, reloads, and verifies the session/routes.
+- Internal cleanup: BGP session/transport code moved to `device/RouterBgp.cpp`,
+  inactive OSPF virtual-link scaffolding removed, and duplicated IPv6 NDP
+  solicited-node helpers consolidated in `core/Icmpv6Message`.
+- Internal structure: DNS implementation moved to
+  `device/end/EndDeviceDns.cpp`; the build now discovers device subfolders.
+- Router protocol implementations moved to `device/router/`
+  (`RouterOspf.cpp`, `RouterDhcp.cpp`, `RouterBgp.cpp`); Makefiles and coverage
+  discovery updated.
 - Per-port drop-reason counters (`drop-stats <device>`): link-down, loss, mtu,
   acl, ttl, no-route, no-egress, arp-pending, fragment, stp, vlan, parse, and
   resource reasons.

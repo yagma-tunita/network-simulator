@@ -163,6 +163,13 @@ ospf-redistribute <router> connected|static|off [metric] [type1|type2]
 ospf-area  <router> <dev:idx> <area-id>
 ospf-area-type <router> <area-id> stub|nssa|normal
 ospf-summary <router> <area-id> <prefix> [not-advertise] | clear
+bgp        <router> on|off
+bgp-as     <router> <asn>
+bgp-router-id <router> <ip>
+bgp-neighbor <router> <ip> <remote-as>
+bgp-network <router> <prefix>
+bgp-path   <router> <peer> <prefix> <next-hop> <asn...>
+bgp-status <router>
 tcp-lite-echo   <device> on|off [port]
 tcp-lite-echo-client <device> <ip> <port> <text...>
 acl        <router> in|out allow|deny <src/p> <dst/p> <proto|any>
@@ -315,7 +322,7 @@ for IPv6. `help <command>` prints one command's usage.
 - `state` prints the topology and counters as JSON, including IPv4/IPv6 addresses,
   IPv6 routes, and NDP neighbor caches.
 - `save`/`load` persists ports, IPv4/IPv6 addresses, links, routes, gateways,
-  ACLs, NAT, and SPAN mirroring.
+  ACLs, NAT, SPAN, and BGP configuration.
 - `--json <file>` emits NDJSON (one record per command plus a final `summary`).
 - `--log <file>` also writes those JSON records to a file.
 - Exit codes: `0` success, `1` runtime/script error, `2` usage error.

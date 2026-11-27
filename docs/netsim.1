@@ -45,7 +45,9 @@ per-area LSDB/SPF and ABR Type 3/4 summaries, Type 5 external routes/default
 origination/redistribution, area summaries, stub/NSSA areas (Type 7 translation), interface
 cost/passive policy and
 simple-password, MD5, SHA-1 or SHA-256
-authentication (\fBospf\fR/\fBospf-status\fR/\fBospf-auth\fR/\fBospf-cost\fR/\fBospf-passive\fR/\fBospf-area\fR). Router
+authentication (\fBospf\fR/\fBospf-status\fR/\fBospf-auth\fR/\fBospf-cost\fR/\fBospf-passive\fR/\fBospf-area\fR).
+BGP configuration and TCP peer sessions use \fBbgp\fR/\fBbgp-as\fR/
+\fBbgp-neighbor\fR/\fBbgp-network\fR/\fBbgp-status\fR. Router
 \fBacl\fR/\fBacl6\fR rules, \fBset-link ... loss|dup|jitter|mtu|clear\fR impairment,
 \fBspan\fR ingress port mirroring, an ASCII
 \fBmap\fR, \fBhelp <command>\fR, and \fBgenerate tree\fR are also available.
@@ -83,7 +85,7 @@ Run a scene or script file.
 .SH FILES
 .TP
 .I *.yn
-Scene file (JSON) with devices, ports, IPv4/IPv6 addresses, links, STP/routing/gateway/ACL/NAT/SPAN settings, and an
+Scene file (JSON) with devices, ports, IPv4/IPv6 addresses, links, STP/routing/gateway/ACL/NAT/SPAN/BGP settings, and an
 optional layout array (ignored by the CLI).
 .TP
 .I *.txt

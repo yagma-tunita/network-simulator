@@ -285,6 +285,15 @@ namespace
             { "tcp-lite-echo-client", "tcp-lite-echo-client <device> <ip> <port> <text...>" },
             { "acl", "acl <router> in|out allow|deny <src/p> <dst/p> <proto|any>" },
             { "acl6", "acl6 <router> in|out allow|deny <src6/p> <dst6/p> <proto|any>" },
+            { "bgp", "bgp <router> on|off" },
+            { "bgp-as", "bgp-as <router> <asn>" },
+            { "bgp-router-id", "bgp-router-id <router> <ip>" },
+            { "bgp-neighbor", "bgp-neighbor <router> <ip> <remote-as>" },
+            { "bgp-network", "bgp-network <router> <prefix>" },
+            { "bgp-local-pref", "bgp-local-pref <router> <neighbor> <value>" },
+            { "bgp-med", "bgp-med <router> <prefix> <value>" },
+            { "bgp-path", "bgp-path <router> <peer> <prefix> <next-hop> <asn...>" },
+            { "bgp-status", "bgp-status <router>" },
             { "map", "map" },
             { "generate", "generate tree <depth> <fanout>" },
             { "remove-device", "remove-device <name>" },
@@ -627,6 +636,15 @@ void PrintHelp()
         "  tcp-lite-echo-client <device> <ip> <port> <text...>\n"
         "  acl        <router> in|out allow|deny <src/p> <dst/p> <proto|any>\n"
         "  acl6       <router> in|out allow|deny <src6/p> <dst6/p> <proto|any>\n"
+        "  bgp        <router> on|off\n"
+        "  bgp-as     <router> <asn>\n"
+        "  bgp-router-id <router> <ip>\n"
+        "  bgp-neighbor <router> <ip> <remote-as>\n"
+        "  bgp-network <router> <prefix>\n"
+        "  bgp-local-pref <router> <neighbor> <value>\n"
+        "  bgp-med    <router> <prefix> <value>\n"
+        "  bgp-path   <router> <peer> <prefix> <next-hop> <asn...>\n"
+        "  bgp-status <router>\n"
         "  map\n"
         "  generate   tree <depth> <fanout>\n"
         "  remove-device <name>\n"

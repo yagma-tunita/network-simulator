@@ -26,7 +26,7 @@ CXXFLAGS += -O0 -g --coverage
 COVERAGE_LDFLAGS := --coverage
 endif
 
-LIB_SRCS := $(wildcard core/*.cpp device/*.cpp link/*.cpp engine/*.cpp topo/*.cpp netstack/*.cpp)
+LIB_SRCS := $(wildcard core/*.cpp device/*.cpp device/end/*.cpp device/router/*.cpp link/*.cpp engine/*.cpp topo/*.cpp netstack/*.cpp)
 APP_SRCS := $(wildcard app/*.cpp)
 SRCS := $(LIB_SRCS) $(APP_SRCS) script/LuaScript.cpp
 LDLIBS := $(LUA_LIB) -lm

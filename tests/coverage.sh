@@ -30,7 +30,7 @@ bash tests/cli_test.sh >/dev/null 2>&1 || true
 mkdir -p "$COV"
 if g++ -std=c++17 -O0 -g --coverage -I. \
         tests/unit/unit_tests.cpp \
-        "$COV"/obj/core/*.o "$COV"/obj/device/*.o "$COV"/obj/link/*.o \
+        "$COV"/obj/core/*.o "$COV"/obj/device/*.o "$COV"/obj/device/end/*.o "$COV"/obj/device/router/*.o "$COV"/obj/link/*.o \
         "$COV"/obj/engine/*.o "$COV"/obj/topo/*.o "$COV"/obj/netstack/*.o \
         -o "$COV"/cov_unit --coverage -lm >/tmp/yn_cov_unit.log 2>&1; then
     ./"$COV"/cov_unit >/dev/null 2>&1 || true
@@ -42,7 +42,7 @@ else
 fi
 
 rm -f ./*.gcov
-( cd "$COV" && gcov obj/core/*.gcno obj/device/*.gcno obj/link/*.gcno obj/engine/*.gcno obj/topo/*.gcno obj/netstack/*.gcno ) >/tmp/yn_gcov.txt 2>&1 || true
+( cd "$COV" && gcov obj/core/*.gcno obj/device/*.gcno obj/device/end/*.gcno obj/device/router/*.gcno obj/link/*.gcno obj/engine/*.gcno obj/topo/*.gcno obj/netstack/*.gcno ) >/tmp/yn_gcov.txt 2>&1 || true
 
 awk -v THRESH="$THRESHOLD" '
   /Lines executed:/ {
@@ -58,5 +58,5 @@ awk -v THRESH="$THRESHOLD" '
 ' /tmp/yn_gcov.txt
 
 rc=$?
-rm -f tests/netsim_test.pcap tests/netsim_tcp_test.pcap tests/netsim_saved.yn tests/netsim_ipv6_saved.yn tests/netsim_acl_saved.yn tests/netsim_acl6_saved.yn tests/netsim_nat_saved.yn tests/netsim_span_saved.yn
+rm -f tests/netsim_test.pcap tests/netsim_tcp_test.pcap tests/netsim_saved.yn tests/netsim_ipv6_saved.yn tests/netsim_acl_saved.yn tests/netsim_acl6_saved.yn tests/netsim_nat_saved.yn tests/netsim_span_saved.yn tests/netsim_bgp_saved.yn
 exit "$rc"

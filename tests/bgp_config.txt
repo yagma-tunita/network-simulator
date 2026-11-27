@@ -1,0 +1,11 @@
+add-device R1 router
+add-port R1 aa:00:00:00:00:01 10.0.0.1/24
+bgp-as R1 65001
+bgp-router-id R1 1.1.1.1
+bgp-neighbor R1 10.0.0.2 65002
+bgp-network R1 192.0.2.0/24
+bgp-path R1 10.0.0.2 203.0.113.0/24 10.0.0.2 65002 65010
+bgp-path R1 10.0.0.2 198.51.100.0/24 10.0.0.2 65002 65020
+bgp-path R1 10.0.0.3 203.0.113.0/24 10.0.0.3 65002
+bgp R1 on
+bgp-status R1

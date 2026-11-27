@@ -29,6 +29,7 @@ namespace
     };
 
 
+
     uint8_t PrefixFromMask(const Ipv4 &mask)
     {
         uint32_t v = mask.value;
@@ -39,25 +40,6 @@ namespace
             v <<= 1;
         }
         return n;
-    }
-
-    Ipv6 SolicitedNode6(const Ipv6 &target)
-    {
-        Ipv6 out;
-        out.bytes[0] = 0xFF;
-        out.bytes[1] = 0x02;
-        out.bytes[11] = 0x01;
-        out.bytes[12] = 0xFF;
-        out.bytes[13] = target.bytes[13];
-        out.bytes[14] = target.bytes[14];
-        out.bytes[15] = target.bytes[15];
-        return out;
-    }
-
-    Mac SolicitedMac6(const Ipv6 &target)
-    {
-        return Mac(0x33, 0x33, 0xFF, target.bytes[13],
-                   target.bytes[14], target.bytes[15]);
     }
 }
 
@@ -79,12 +61,15 @@ void Router::AddPort(Port *p)
 void Router::RebuildConnected()
 {
     routeTable.erase(std::remove_if(routeTable.begin(), routeTable.end(),
-                     [](const Route &r) { return r.direct || r.dynamic; }),
+                     [](const Route &r) {
+                         return r.direct || (r.dynamic && !r.bgp);
+                     }),
                      routeTable.end());
     MarkRoutesDirty();
     for(Port *p : portList)
         if(p->hasIp) AddRoute(p->subnet, Ipv4::Any(), true);
     RebuildConnected6();
+    BgpSelect();
 }
 
 void Router::RebuildConnected6()
@@ -143,6 +128,97 @@ Port* Router::PortForIpv6NextHop(const Ipv6 &ip) const
         if(p->hasIp6 && Ipv6Subnet(p->ip6, p->prefix6).Contains(ip))
             return p;
     return nullptr;
+}
+
+namespace
+{
+    bool BgpBetter(const BgpPath &a, const BgpPath &b)
+    {
+        if(a.localPref != b.localPref)
+            return a.localPref > b.localPref;
+        if(a.asPath.size() != b.asPath.size())
+            return a.asPath.size() < b.asPath.size();
+        if(a.origin != b.origin)
+            return a.origin < b.origin;
+        if(a.med != b.med)
+            return a.med < b.med;
+        if(a.ebgp != b.ebgp)
+            return a.ebgp;
+        if(!(a.routerId == b.routerId))
+            return a.routerId.value < b.routerId.value;
+        return a.peer.value < b.peer.value;
+    }
+}
+
+void Router::BgpAddPath(const BgpPath &path)
+{
+    bgpPaths.erase(std::remove_if(bgpPaths.begin(), bgpPaths.end(),
+                   [&](const BgpPath &p) {
+                       return p.prefix == path.prefix && p.peer == path.peer;
+                   }), bgpPaths.end());
+    bgpPaths.push_back(path);
+    BgpSelect();
+}
+
+void Router::BgpWithdraw(const Ipv4 &peer, const Ipv4Subnet &prefix)
+{
+    bgpPaths.erase(std::remove_if(bgpPaths.begin(), bgpPaths.end(),
+                   [&](const BgpPath &p) {
+                       return p.peer == peer && p.prefix == prefix;
+                   }), bgpPaths.end());
+    BgpSelect();
+}
+
+void Router::BgpWithdrawPeer(const Ipv4 &peer)
+{
+    bgpPaths.erase(std::remove_if(bgpPaths.begin(), bgpPaths.end(),
+                   [&](const BgpPath &p) { return p.peer == peer; }),
+                   bgpPaths.end());
+    BgpSelect();
+}
+
+void Router::BgpReapplyPolicy()
+{
+    for(BgpPath &p : bgpPaths)
+    {
+        auto it = bgpLocalPrefIn.find(p.peer);
+        p.localPref = it != bgpLocalPrefIn.end()
+            ? it->second : p.receivedLocalPref;
+    }
+    BgpSelect();
+}
+
+void Router::BgpSelect()
+{
+    bgpRib.clear();
+    routeTable.erase(std::remove_if(routeTable.begin(), routeTable.end(),
+                     [](const Route &r) { return r.bgp; }),
+                     routeTable.end());
+    MarkRoutesDirty();
+
+    std::map<Ipv4Subnet, const BgpPath *> best;
+    for(const BgpPath &p : bgpPaths)
+    {
+        auto it = best.find(p.prefix);
+        if(it == best.end() || BgpBetter(p, *it->second))
+            best[p.prefix] = &p;
+    }
+    for(const auto &kv : best)
+    {
+        const BgpPath &p = *kv.second;
+        bgpRib.push_back(BgpSelected{ p.prefix, p.nextHop, p.peer, p.asPath });
+        if(!bgpEnabled)
+            continue;
+        Port *egress = PortForNextHop(p.nextHop);
+        if(!egress)
+            continue;
+        Route r(p.prefix, p.nextHop, false);
+        r.dynamic = true;
+        r.bgp = true;
+        r.learnedFromPort = egress;
+        routeTable.push_back(r);
+        MarkRoutesDirty();
+    }
 }
 
 void Router::AddRoute(const Ipv4Subnet &dst, const Ipv4 &nextHop, bool direct)
@@ -517,7 +593,9 @@ void Router::SetRip(bool on)
     if(!on)
     {
         routeTable.erase(std::remove_if(routeTable.begin(), routeTable.end(),
-                         [](const Route &r) { return r.dynamic && !r.ospf; }),
+                         [](const Route &r) {
+                             return r.dynamic && !r.ospf && !r.bgp;
+                         }),
                          routeTable.end());
         MarkRoutesDirty();
         return;
@@ -540,7 +618,7 @@ void Router::RipTick(uint64_t gen)
 
     routeTable.erase(std::remove_if(routeTable.begin(), routeTable.end(),
                      [now](const Route &r) {
-                         return r.dynamic && !r.ospf && now >= r.expiresAt;
+                         return r.dynamic && !r.ospf && !r.bgp && now >= r.expiresAt;
                      }),
                      routeTable.end());
     MarkRoutesDirty();
@@ -651,7 +729,7 @@ void Router::HandleRip(Port *ingress, const IpPacket &pkt, const UdpDatagram &dg
             if(dyn)
                 routeTable.erase(std::remove_if(routeTable.begin(), routeTable.end(),
                                  [&dst](const Route &r) {
-                                     return r.dynamic && !r.ospf && r.dst == dst;
+                                     return r.dynamic && !r.ospf && !r.bgp && r.dst == dst;
                                  }),
                                  routeTable.end());
             continue;
@@ -703,6 +781,14 @@ void Router::OnFrame(Port *port, FramePtr frame)
 
     IpPacket pkt;
     if(!IpPacket::TryFromBytes(frame->payload, pkt)) return;
+
+    if(pkt.protocol == IpPacket::kTcp && IsMyIp(pkt.dstIp) &&
+       pkt.payload.size() >= 4 &&
+       ((uint16_t(pkt.payload[2]) << 8) | pkt.payload[3]) == 179)
+    {
+        HandleBgpTcp(port, pkt, frame->src);
+        return;
+    }
 
     if(pkt.protocol == IpPacket::kUdp)
     {
@@ -850,8 +936,8 @@ void Router::SendNs6(Port *egress, const Ipv6 &target)
     ns.type = Icmpv6Message::kNeighborSolicit;
     ns.target = target;
     ns.options = NdpLinkLayerOption(1, egress->mac);
-    SendIcmp6(egress, egress->ip6, SolicitedNode6(target),
-              SolicitedMac6(target), ns);
+    SendIcmp6(egress, egress->ip6, NdpSolicitedNode(target),
+              NdpSolicitedMac(target), ns);
 }
 
 void Router::SendIcmp6Error(Port *ingress, const EthernetFrame &origin,

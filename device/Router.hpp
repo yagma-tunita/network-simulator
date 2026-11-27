@@ -10,10 +10,13 @@
 #include "../core/Icmpv6Message.hpp"
 #include "../core/IpPacket.hpp"
 #include "../core/OspfPacket.hpp"
+#include "../core/BgpMessage.hpp"
+#include "../netstack/TcpConnection.hpp"
 #include <map>
 #include <tuple>
 #include <vector>
 #include <string>
+#include <list>
 #include <cstddef>
 
 struct Port;
@@ -27,6 +30,7 @@ struct Route
     uint16_t metric = 0;
     bool dynamic = false;
     bool ospf = false;
+    bool bgp = false;
     bool external = false;
     uint32_t ospfOrigin = 0;
     Port *learnedFromPort = nullptr;
@@ -46,6 +50,28 @@ struct Ipv6Route
     Ipv6Route() = default;
     Ipv6Route(const Ipv6Subnet &d, const Ipv6 &nh, bool dir, Port *p = nullptr)
         : dst(d), nextHop(nh), direct(dir), port(p) {}
+};
+
+struct BgpPath
+{
+    Ipv4Subnet prefix;
+    Ipv4 nextHop;
+    Ipv4 peer;
+    std::vector<uint16_t> asPath;
+    uint32_t localPref = 100;
+    uint32_t receivedLocalPref = 100;
+    uint32_t med = 0;
+    uint8_t origin = 0;
+    Ipv4 routerId;
+    bool ebgp = true;
+};
+
+struct BgpSelected
+{
+    Ipv4Subnet prefix;
+    Ipv4 nextHop;
+    Ipv4 peer;
+    std::vector<uint16_t> asPath;
 };
 
 struct Router : Device
@@ -143,22 +169,12 @@ struct Router : Device
         uint8_t priority = 1;
         uint16_t cost = 1;
         bool passive = false;
-        bool virtualLink = false;
-        Ipv4 transitArea;
-        uint32_t vlinkPeer = 0;
         uint64_t waitUntil = 0;
         Ipv4 dr;
         Ipv4 bdr;
         Ipv4 drIp;
         Ipv4 bdrIp;
         std::map<uint32_t, OspfNeighbor> neighbors;
-    };
-
-    struct OspfVlink
-    {
-        Ipv4 transitArea;
-        uint32_t peerId = 0;
-        uint16_t cost = 1;
     };
 
     struct OspfExternal
@@ -262,7 +278,50 @@ struct Router : Device
     bool ospfRedistType2 = true;
     std::map<OspfKey, OspfExtLsa> ospfExternalLsdb;
     std::vector<OspfInterface> ospfIfaces;
-    std::vector<OspfVlink> ospfVlinks;
+
+    bool bgpEnabled = false;
+    uint16_t bgpLocalAs = 0;
+    Ipv4 bgpRouterId;
+    uint64_t bgpGen = 0;
+    std::map<Ipv4, uint16_t> bgpNeighbors;
+    std::map<Ipv4, uint32_t> bgpLocalPrefIn;
+    std::map<Ipv4Subnet, uint32_t> bgpMedOut;
+    std::vector<Ipv4Subnet> bgpNetworks;
+    std::vector<BgpPath> bgpPaths;
+    std::vector<BgpSelected> bgpRib;
+    struct BgpSession
+    {
+        TcpConnection conn;
+        bool listener = false;
+        Ipv4 localIp;
+        Ipv4 peerIp;
+        uint16_t remoteAs = 0;
+        uint8_t state = 0;
+        bool sentUpdates = false;
+        uint64_t lastRx = 0;
+        uint64_t keepGen = 0;
+        uint64_t reconnectGen = 0;
+        std::vector<uint8_t> rx;
+    };
+    std::list<BgpSession> bgpSessions;
+    void BgpStart();
+    void BgpStop();
+    void BgpSetupSession(BgpSession &s);
+    void BgpSend(BgpSession &s, const BgpMessage &msg);
+    void BgpOnConnected(BgpSession &s);
+    void BgpOnData(BgpSession &s, const std::vector<uint8_t> &data);
+    void BgpHandle(BgpSession &s, const BgpMessage &msg);
+    void BgpScheduleKeepalive(BgpSession &s);
+    void BgpKeepaliveTick(BgpSession &s, uint64_t gen);
+    void BgpScheduleReconnect(BgpSession &s);
+    void BgpReconnectTick(BgpSession &s, uint64_t gen);
+    void SendBgpTcpSegment(TcpConnection &conn, const TcpSegment &seg);
+    void HandleBgpTcp(Port *port, const IpPacket &pkt, const Mac &srcMac);
+    void BgpAddPath(const BgpPath &path);
+    void BgpWithdraw(const Ipv4 &peer, const Ipv4Subnet &prefix);
+    void BgpWithdrawPeer(const Ipv4 &peer);
+    void BgpReapplyPolicy();
+    void BgpSelect();
 
     void FlushPending();
     void AgeOutPending(uint64_t now);
@@ -297,12 +356,9 @@ struct Router : Device
     void OspfTick(uint64_t gen);
     void SendOspfHellos();
     void SendOspfHello(Port *p);
-    void SendVirtualOspfHellos();
-    void SendOspfHelloVirtual(OspfInterface &ifc);
     void SendOspfPacket(Port *egress, const OspfPacket &pkt,
-                        const Ipv4 &dstIp, const Mac &dstMac, uint8_t ttl = 1);
+                        const Ipv4 &dstIp, const Mac &dstMac);
     void HandleOspf(Port *ingress, const IpPacket &pkt, const Mac &srcMac);
-    OspfInterface *OspfIfcForOspf(Port *ingress, const OspfPacket &pkt);
     void HandleOspfHello(Port *ingress, const OspfPacket &pkt,
                          const Mac &srcMac, const Ipv4 &srcIp);
     void OspfElect(OspfInterface &ifc);

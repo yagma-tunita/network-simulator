@@ -36,3 +36,5 @@ struct Icmpv6Message
 std::vector<uint8_t> NdpLinkLayerOption(uint8_t type, const Mac &mac);
 bool NdpParseLinkLayerOption(const std::vector<uint8_t> &options,
                              uint8_t type, Mac &mac);
+Ipv6 NdpSolicitedNode(const Ipv6 &target);
+Mac NdpSolicitedMac(const Ipv6 &target);

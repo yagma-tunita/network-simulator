@@ -1861,10 +1861,7 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
         for (const auto &ifc : r->ospfIfaces)
         {
             std::cout << "  iface ";
-            if (ifc.virtualLink)
-                std::cout << "vlink(" << Ipv4(ifc.vlinkPeer).ToString()
-                          << ") transit=" << ifc.transitArea.ToString();
-            else if (ifc.port)
+            if (ifc.port)
                 std::cout << ifc.port->ip.ToString();
             else
                 std::cout << "-";
@@ -2190,6 +2187,157 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
 
         r->AddAcl6(inbound, permit, src, dst, proto);
         std::cout << "acl6 added\n";
+    }
+    else if (cmd == "bgp")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("bgp <router> on|off");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        if (t[2] != "on" && t[2] != "off")
+            throw std::invalid_argument("bgp <router> on|off");
+        r->bgpEnabled = t[2] == "on";
+        if (r->bgpEnabled) r->BgpStart();
+        else r->BgpStop();
+    }
+    else if (cmd == "bgp-as")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("bgp-as <router> <asn>");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        unsigned asn = std::stoul(t[2]);
+        if (asn == 0 || asn > 65535)
+            throw std::invalid_argument("bgp ASN out of range");
+        r->bgpLocalAs = uint16_t(asn);
+        if (r->bgpEnabled) r->BgpStart();
+    }
+    else if (cmd == "bgp-router-id")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("bgp-router-id <router> <ip>");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        r->bgpRouterId = Ipv4(t[2]);
+        if (r->bgpEnabled) r->BgpStart();
+    }
+    else if (cmd == "bgp-neighbor")
+    {
+        if (t.size() != 4)
+            throw std::invalid_argument("bgp-neighbor <router> <ip> <remote-as>");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        unsigned asn = std::stoul(t[3]);
+        if (asn == 0 || asn > 65535)
+            throw std::invalid_argument("bgp remote ASN out of range");
+        r->bgpNeighbors[Ipv4(t[2])] = uint16_t(asn);
+        if (r->bgpEnabled) r->BgpStart();
+    }
+    else if (cmd == "bgp-network")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("bgp-network <router> <prefix>");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        r->bgpNetworks.push_back(Ipv4Subnet(t[2]));
+    }
+    else if (cmd == "bgp-local-pref")
+    {
+        if (t.size() != 4)
+            throw std::invalid_argument("bgp-local-pref <router> <neighbor> <value>");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        unsigned long long value = std::stoull(t[3]);
+        if (value > 0xFFFFFFFFull)
+            throw std::invalid_argument("bgp local-pref out of range");
+        r->bgpLocalPrefIn[Ipv4(t[2])] = uint32_t(value);
+        r->BgpReapplyPolicy();
+    }
+    else if (cmd == "bgp-med")
+    {
+        if (t.size() != 4)
+            throw std::invalid_argument("bgp-med <router> <prefix> <value>");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        unsigned long long value = std::stoull(t[3]);
+        if (value > 0xFFFFFFFFull)
+            throw std::invalid_argument("bgp MED out of range");
+        r->bgpMedOut[Ipv4Subnet(t[2])] = uint32_t(value);
+    }
+    else if (cmd == "bgp-path")
+    {
+        if (t.size() < 6)
+            throw std::invalid_argument("bgp-path <router> <peer> <prefix> <next-hop> <asn...>");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        BgpPath p;
+        p.peer = Ipv4(t[2]);
+        p.prefix = Ipv4Subnet(t[3]);
+        p.nextHop = Ipv4(t[4]);
+        p.routerId = p.peer;
+        for (std::size_t i = 5; i < t.size(); ++i)
+        {
+            unsigned asn = std::stoul(t[i]);
+            if (asn == 0 || asn > 65535)
+                throw std::invalid_argument("bgp AS path value out of range");
+            p.asPath.push_back(uint16_t(asn));
+        }
+        p.ebgp = p.asPath.empty() || p.asPath.front() != r->bgpLocalAs;
+        r->BgpAddPath(p);
+    }
+    else if (cmd == "bgp-status")
+    {
+        if (t.size() != 2)
+            throw std::invalid_argument("bgp-status <router>");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        std::cout << "bgp " << t[1] << ": "
+                  << (r->bgpEnabled ? "on" : "off")
+                  << " as=" << r->bgpLocalAs
+                  << " id=" << r->bgpRouterId.ToString()
+                  << " neighbors=" << r->bgpNeighbors.size()
+                  << " networks=" << r->bgpNetworks.size()
+                  << " paths=" << r->bgpPaths.size()
+                  << " rib=" << r->bgpRib.size() << "\n";
+        for (const auto &kv : r->bgpNeighbors)
+            std::cout << "  neighbor " << kv.first.ToString()
+                      << " as=" << kv.second << "\n";
+        auto stateName = [](uint8_t state) {
+            switch(state)
+            {
+                case 1: return "OpenSent";
+                case 2: return "OpenConfirm";
+                case 3: return "Established";
+                default: return "Idle";
+            }
+        };
+        for (const auto &s : r->bgpSessions)
+        {
+            if (s.state == 0)
+                continue;
+            std::cout << "  session " << s.peerIp.ToString()
+                      << " state=" << stateName(s.state) << "\n";
+        }
+        for (const BgpSelected &s : r->bgpRib)
+        {
+            std::cout << "  rib " << s.prefix.ToString() << " via "
+                      << s.peer.ToString() << " aspath=";
+            for (std::size_t i = 0; i < s.asPath.size(); ++i)
+            {
+                if (i) std::cout << " ";
+                std::cout << s.asPath[i];
+            }
+            std::cout << "\n";
+        }
     }
     else
     {
