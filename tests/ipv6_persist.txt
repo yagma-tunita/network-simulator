@@ -1,0 +1,12 @@
+add-device PC1 end
+add-device PC2 end
+add-port PC1 aa:aa:aa:aa:aa:01
+add-port PC2 aa:aa:aa:aa:aa:02
+connect PC1:0 PC2:0
+set-ip6 PC1:0 2001:db8::1
+set-ip6 PC2:0 2001:db8::2
+save tests/netsim_ipv6_saved.yn
+new
+load tests/netsim_ipv6_saved.yn
+ping6 PC1 2001:db8::2
+run 200

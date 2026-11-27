@@ -25,13 +25,28 @@ type Stats struct {
 	SYNWithWS   int
 	SYNWithSACK int
 	SYNWithTS   int
+	TCPData     int
+	TCPRetrans  int
+	TCPSACK     int
+	TCPECN      int
+	TCPCE       int
+	TCPDF       int
 	Issues      []Issue
 }
 
 type flow struct {
-	established bool
-	sawSyn      bool
-	sawSynAck   bool
+	established   bool
+	sawSyn        bool
+	sawSynAck     bool
+	client        string
+	clientISN     uint32
+	serverISN     uint32
+	clientMSS     uint16
+	serverMSS     uint16
+	haveClientMSS bool
+	haveServerMSS bool
+	maxCSeq       uint32
+	maxSSeq       uint32
 }
 
 type Analyzer struct {
@@ -111,7 +126,7 @@ func (a *Analyzer) analyzeTCP(frame int, ip proto.IPv4, tcp proto.TCP) {
 
 	if tcp.Flags&proto.TCPSyn != 0 && tcp.Flags&proto.TCPAck == 0 {
 		if f == nil {
-			f = &flow{}
+			f = &flow{client: direct}
 			a.flows[direct] = f
 			a.stats.TCPFlows++
 			if _, ok := tcp.MSS(); ok {
@@ -128,6 +143,11 @@ func (a *Analyzer) analyzeTCP(frame int, ip proto.IPv4, tcp proto.TCP) {
 			}
 		}
 		f.sawSyn = true
+		f.clientISN = tcp.Seq
+		if m, ok := tcp.MSS(); ok {
+			f.clientMSS = m
+			f.haveClientMSS = true
+		}
 		return
 	}
 
@@ -137,6 +157,11 @@ func (a *Analyzer) analyzeTCP(frame int, ip proto.IPv4, tcp proto.TCP) {
 			return
 		}
 		f.sawSynAck = true
+		f.serverISN = tcp.Seq
+		if m, ok := tcp.MSS(); ok {
+			f.serverMSS = m
+			f.haveServerMSS = true
+		}
 		return
 	}
 
@@ -148,6 +173,45 @@ func (a *Analyzer) analyzeTCP(frame int, ip proto.IPv4, tcp proto.TCP) {
 	}
 	if f.sawSynAck && tcp.Flags&proto.TCPAck != 0 && !f.established {
 		f.established = true
+	}
+
+	a.stats.TCPSACK += len(tcp.SACKBlocks())
+	if ip.ECN != 0 {
+		a.stats.TCPECN++
+	}
+	if ip.ECN == 3 {
+		a.stats.TCPCE++
+	}
+	if ip.DF {
+		a.stats.TCPDF++
+	}
+
+	if len(tcp.Payload) == 0 {
+		return
+	}
+
+	a.stats.TCPData++
+	fromClient := direct == f.client
+	if fromClient {
+		if f.haveServerMSS && len(tcp.Payload) > int(f.serverMSS) {
+			a.issue(frame, "tcp", "payload exceeds peer MSS")
+		}
+		if f.maxCSeq != 0 && tcp.Seq <= f.maxCSeq {
+			a.stats.TCPRetrans++
+		}
+		if f.maxCSeq == 0 || tcp.Seq > f.maxCSeq {
+			f.maxCSeq = tcp.Seq
+		}
+	} else {
+		if f.haveClientMSS && len(tcp.Payload) > int(f.clientMSS) {
+			a.issue(frame, "tcp", "payload exceeds peer MSS")
+		}
+		if f.maxSSeq != 0 && tcp.Seq <= f.maxSSeq {
+			a.stats.TCPRetrans++
+		}
+		if f.maxSSeq == 0 || tcp.Seq > f.maxSSeq {
+			f.maxSSeq = tcp.Seq
+		}
 	}
 }
 

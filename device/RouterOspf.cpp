@@ -68,6 +68,8 @@ namespace
 
 uint32_t Router::ComputeOspfRouterId() const
 {
+    if(ospfRouterIdCfg != 0)
+        return ospfRouterIdCfg;
     uint32_t id = 0;
     for(const Port *p : portList)
         if(p->hasIp && p->ip.value > id)
@@ -139,10 +141,10 @@ void Router::OspfTick(uint64_t gen)
 
         if(ifc.state == OspfIfWaiting)
         {
-            if(now >= ifc.waitUntil)
+            if(!ifc.virtualLink && now >= ifc.waitUntil)
                 OspfElect(ifc);
         }
-        else
+        else if(!ifc.virtualLink)
         {
             OspfElect(ifc);
         }
@@ -171,6 +173,8 @@ void Router::OspfTick(uint64_t gen)
         }
 
         SendOspfHello(ifc.port);
+        if(ifc.virtualLink)
+            SendOspfHelloVirtual(ifc);
     }
 
     bool aged = false;
@@ -238,7 +242,52 @@ void Router::OspfTick(uint64_t gen)
 void Router::SendOspfHellos()
 {
     for(OspfInterface &ifc : ospfIfaces)
-        SendOspfHello(ifc.port);
+        if(!ifc.virtualLink)
+            SendOspfHello(ifc.port);
+}
+
+void Router::SendVirtualOspfHellos()
+{
+    for(OspfInterface &ifc : ospfIfaces)
+        if(ifc.virtualLink)
+            SendOspfHelloVirtual(ifc);
+}
+
+void Router::SendOspfHelloVirtual(OspfInterface &ifc)
+{
+    if(!ospfEnabled || ifc.passive || ifc.vlinkPeer == 0)
+        return;
+
+    const Route *r = FindRoute(Ipv4(ifc.vlinkPeer));
+    if(!r)
+        return;
+    Ipv4 nextHop = r->direct ? Ipv4(ifc.vlinkPeer) : r->nextHop;
+    Port *egress = PortForNextHop(nextHop);
+    if(!egress)
+        return;
+
+    Mac dstMac;
+    if(!arp.Lookup(nextHop, dstMac))
+    {
+        arp.SendArpRequest(nextHop, egress);
+        return;
+    }
+    ifc.port = egress;
+
+    OspfPacket pkt;
+    pkt.type = OspfPacket::Hello;
+    FillOspfHeader(pkt, *this);
+    pkt.areaId = Ipv4::Any();
+    pkt.helloMask = Ipv4::Any();
+    pkt.helloInterval = uint16_t(kOspfHelloInterval);
+    pkt.helloOptions = 0x02;
+    pkt.helloPriority = 0;
+    pkt.deadInterval = uint32_t(kOspfDeadInterval);
+    for(const auto &kv : ifc.neighbors)
+        if(kv.second.state >= OspfNbrInit)
+            pkt.neighbors.push_back(Ipv4(kv.first));
+
+    SendOspfPacket(egress, pkt, Ipv4(ifc.vlinkPeer), dstMac, 64);
 }
 
 void Router::SendOspfHello(Port *p)
@@ -279,13 +328,14 @@ void Router::SendOspfHello(Port *p)
 }
 
 void Router::SendOspfPacket(Port *egress, const OspfPacket &pkt,
-                            const Ipv4 &dstIp, const Mac &dstMac)
+                            const Ipv4 &dstIp, const Mac &dstMac,
+                            uint8_t ttl)
 {
     if(!egress || !egress->hasIp)
         return;
 
     IpPacket ip(egress->ip, dstIp, IpPacket::kOspf, pkt.ToBytes());
-    ip.ttl = 1;
+    ip.ttl = ttl;
 
     if(ip.payload.empty())
         return;
@@ -297,8 +347,22 @@ void Router::SendOspfPacket(Port *egress, const OspfPacket &pkt,
 Router::OspfInterface *Router::OspfIfcForPort(Port *p)
 {
     for(OspfInterface &ifc : ospfIfaces)
-        if(ifc.port == p)
+        if(!ifc.virtualLink && ifc.port == p)
             return &ifc;
+    return nullptr;
+}
+
+Router::OspfInterface *Router::OspfIfcForOspf(Port *ingress,
+                                              const OspfPacket &pkt)
+{
+    for(OspfInterface &ifc : ospfIfaces)
+        if(!ifc.virtualLink && ifc.port == ingress &&
+           pkt.areaId == ifc.area)
+            return &ifc;
+    if(pkt.areaId.value == 0)
+        for(OspfInterface &ifc : ospfIfaces)
+            if(ifc.virtualLink && ifc.vlinkPeer == pkt.routerId.value)
+                return &ifc;
     return nullptr;
 }
 
@@ -309,10 +373,8 @@ void Router::HandleOspf(Port *ingress, const IpPacket &pkt, const Mac &srcMac)
         return;
     if(op.routerId.value == 0 || op.routerId.value == ospfRouterId)
         return;
-    OspfInterface *ifc = OspfIfcForPort(ingress);
+    OspfInterface *ifc = OspfIfcForOspf(ingress, op);
     if(!ifc || ifc->passive)
-        return;
-    if(!(op.areaId == ifc->area))
         return;
     if(op.authType != ospfAuthType)
         return;
@@ -351,20 +413,20 @@ void Router::HandleOspf(Port *ingress, const IpPacket &pkt, const Mac &srcMac)
 void Router::HandleOspfHello(Port *ingress, const OspfPacket &pkt,
                              const Mac &srcMac, const Ipv4 &srcIp)
 {
-    OspfInterface *ifc = nullptr;
-    for(OspfInterface &i : ospfIfaces)
-        if(i.port == ingress)
-        {
-            ifc = &i;
-            break;
-        }
+    OspfInterface *ifc = OspfIfcForOspf(ingress, pkt);
     if(!ifc)
         return;
 
     if(pkt.helloInterval != uint16_t(kOspfHelloInterval) ||
        pkt.deadInterval != uint32_t(kOspfDeadInterval))
         return;
-    if(!(pkt.helloMask == ingress->subnet.Mask()))
+    if(ifc->virtualLink)
+    {
+        if(!(pkt.helloMask == Ipv4::Any()))
+            return;
+        ifc->port = ingress;
+    }
+    else if(!(pkt.helloMask == ingress->subnet.Mask()))
         return;
 
     uint64_t now = clock ? clock->Now() : 0;
@@ -491,7 +553,8 @@ void Router::OspfMaybeAdjacency(OspfInterface &ifc, OspfNeighbor &n)
     if(ifc.state == OspfIfWaiting || ifc.state == OspfIfDown)
         return;
 
-    bool eligible = ifc.state == OspfIfDr || ifc.state == OspfIfBdr ||
+    bool eligible = ifc.virtualLink ||
+                    ifc.state == OspfIfDr || ifc.state == OspfIfBdr ||
                     ifc.dr == Ipv4(n.routerId) || ifc.bdr == Ipv4(n.routerId);
     if(!eligible)
         return;
@@ -518,7 +581,7 @@ void Router::OspfSendDdInitial(OspfInterface &ifc, OspfNeighbor &n)
     p.ddSeq = n.ddSeq;
 
     n.nextResend = (clock ? clock->Now() : 0) + 5;
-    SendOspfPacket(ifc.port, p, n.ip, n.mac);
+    SendOspfPacket(ifc.port, p, n.ip, n.mac, ifc.virtualLink ? 64 : 1);
 }
 
 void Router::OspfSendDdFull(OspfInterface &ifc, OspfNeighbor &n)
@@ -545,13 +608,13 @@ void Router::OspfSendDdFull(OspfInterface &ifc, OspfNeighbor &n)
             p.ddHeaders.push_back(kv.second.lsa.header);
 
     n.nextResend = (clock ? clock->Now() : 0) + 5;
-    SendOspfPacket(ifc.port, p, n.ip, n.mac);
+    SendOspfPacket(ifc.port, p, n.ip, n.mac, ifc.virtualLink ? 64 : 1);
 }
 
 void Router::OspfHandleDd(Port *ingress, const OspfPacket &pkt,
                           const Mac &srcMac, const Ipv4 &srcIp)
 {
-    OspfInterface *ifc = OspfIfcForPort(ingress);
+    OspfInterface *ifc = OspfIfcForOspf(ingress, pkt);
     if(!ifc)
         return;
 
@@ -575,7 +638,7 @@ void Router::OspfHandleDd(Port *ingress, const OspfPacket &pkt,
             FillOspfHeader(a, *this);
             a.areaId = ifc->area;
             a.type = OspfPacket::LinkStateAck;
-            SendOspfPacket(ingress, a, n.ip, n.mac);
+            SendOspfPacket(ingress, a, n.ip, n.mac, ifc->virtualLink ? 64 : 1);
         }
         return;
     }
@@ -691,13 +754,13 @@ void Router::OspfSendLsr(OspfInterface &ifc, OspfNeighbor &n)
     p.requests = n.requests;
 
     n.nextResend = (clock ? clock->Now() : 0) + 5;
-    SendOspfPacket(ifc.port, p, n.ip, n.mac);
+    SendOspfPacket(ifc.port, p, n.ip, n.mac, ifc.virtualLink ? 64 : 1);
 }
 
 void Router::OspfHandleLsr(Port *ingress, const OspfPacket &pkt,
                            const Mac &srcMac, const Ipv4 &srcIp)
 {
-    OspfInterface *ifc = OspfIfcForPort(ingress);
+    OspfInterface *ifc = OspfIfcForOspf(ingress, pkt);
     if(!ifc)
         return;
 
@@ -728,13 +791,13 @@ void Router::OspfHandleLsr(Port *ingress, const OspfPacket &pkt,
     p.type = OspfPacket::LinkStateUpdate;
     p.lsas = lsas;
 
-    SendOspfPacket(ingress, p, srcIp, srcMac);
+    SendOspfPacket(ingress, p, srcIp, srcMac, ifc->virtualLink ? 64 : 1);
 }
 
 void Router::OspfHandleLsu(Port *ingress, const OspfPacket &pkt,
                            const Mac &srcMac, const Ipv4 &srcIp)
 {
-    OspfInterface *ifc = OspfIfcForPort(ingress);
+    OspfInterface *ifc = OspfIfcForOspf(ingress, pkt);
     if(!ifc)
         return;
 
@@ -803,7 +866,7 @@ void Router::OspfHandleLsu(Port *ingress, const OspfPacket &pkt,
         a.areaId = ifc->area;
         a.type = OspfPacket::LinkStateAck;
         a.acks = acks;
-        SendOspfPacket(ingress, a, srcIp, srcMac);
+        SendOspfPacket(ingress, a, srcIp, srcMac, ifc->virtualLink ? 64 : 1);
     }
 
     for(const OspfLsa &lsa : installedArea)
@@ -920,7 +983,7 @@ void Router::OspfSendLsu(OspfInterface &ifc, OspfNeighbor &n,
     p.type = OspfPacket::LinkStateUpdate;
     p.lsas = lsas;
 
-    SendOspfPacket(ifc.port, p, n.ip, n.mac);
+    SendOspfPacket(ifc.port, p, n.ip, n.mac, ifc.virtualLink ? 64 : 1);
 }
 
 void Router::OspfFlood(uint32_t area, const OspfLsa &lsa, Port *except)
@@ -955,6 +1018,17 @@ OspfLsa Router::OspfBuildRouterLsa(uint32_t area)
                 full = true;
                 break;
             }
+
+        if(ifc.virtualLink)
+        {
+            if(full)
+                lsa.links.push_back(OspfRouterLink{
+                    Ipv4(ifc.vlinkPeer),
+                    ifc.port ? ifc.port->ip : Ipv4::Any(), 4, ifc.cost });
+            continue;
+        }
+        if(!ifc.port)
+            continue;
 
         if(full && ifc.drIp.value != 0)
             lsa.links.push_back(OspfRouterLink{
@@ -1027,6 +1101,8 @@ void Router::OspfConverge()
 
     for(OspfInterface &ifc : ospfIfaces)
     {
+        if(ifc.virtualLink || !ifc.port)
+            continue;
         uint32_t area = ifc.area.value;
         auto &lsas = ospfLsdb[area];
         auto nkey = std::make_tuple(uint8_t(OspfPacket::NetworkLsa),
@@ -1075,6 +1151,50 @@ void Router::AddOspfExternal(const Ipv4Subnet &dst, uint32_t metric, bool type2)
     ospfExternals.push_back(OspfExternal{ dst, metric, type2 });
 }
 
+void Router::SetOspfDefaultOriginate(bool on, uint32_t metric, bool type2)
+{
+    ospfDefaultOriginate = on;
+    ospfDefaultMetric = metric;
+    ospfDefaultType2 = type2;
+    if(ospfEnabled)
+        OspfOriginateExternals();
+}
+
+void Router::SetOspfRedistribute(bool connected, bool isStatic,
+                                 uint32_t metric, bool type2)
+{
+    ospfRedistConnected = connected;
+    ospfRedistStatic = isStatic;
+    ospfRedistMetric = metric;
+    ospfRedistType2 = type2;
+    if(ospfEnabled)
+        OspfOriginateExternals();
+}
+
+void Router::AddOspfSummary(uint32_t area, const Ipv4Subnet &dst,
+                            bool notAdvertise)
+{
+    std::vector<OspfSummary> &list = ospfSummaries[area];
+    for(OspfSummary &s : list)
+        if(s.dst == dst)
+        {
+            s.notAdvertise = notAdvertise;
+            if(ospfEnabled)
+                OspfOriginateSummaries();
+            return;
+        }
+    list.push_back(OspfSummary{ dst, notAdvertise });
+    if(ospfEnabled)
+        OspfOriginateSummaries();
+}
+
+void Router::ClearOspfSummaries(uint32_t area)
+{
+    ospfSummaries.erase(area);
+    if(ospfEnabled)
+        OspfOriginateSummaries();
+}
+
 void Router::OspfFloodExternal(const OspfLsa &lsa, Port *except)
 {
     for(OspfInterface &ifc : ospfIfaces)
@@ -1114,7 +1234,37 @@ void Router::OspfOriginateExternals()
     std::set<OspfKey> desired;
     std::map<uint32_t, std::set<OspfKey>> desired7;
 
+    std::vector<OspfExternal> externals;
+    std::set<std::pair<uint32_t, uint8_t>> seen;
+    auto addExternal = [&](const Ipv4Subnet &dst, uint32_t metric,
+                           bool type2)
+    {
+        std::pair<uint32_t, uint8_t> key{ dst.network.value, dst.prefix };
+        if(!seen.insert(key).second)
+            return;
+        externals.push_back(OspfExternal{ dst, metric, type2 });
+    };
+
     for(const OspfExternal &ext : ospfExternals)
+        addExternal(ext.dst, ext.metric, ext.type2);
+    if(ospfDefaultOriginate)
+        addExternal(Ipv4Subnet("0.0.0.0/0"), ospfDefaultMetric,
+                    ospfDefaultType2);
+    if(ospfRedistConnected || ospfRedistStatic)
+    {
+        for(const Route &r : routeTable)
+        {
+            if(r.ospf || r.dynamic)
+                continue;
+            if(r.direct && !ospfRedistConnected)
+                continue;
+            if(!r.direct && !ospfRedistStatic)
+                continue;
+            addExternal(r.dst, ospfRedistMetric, ospfRedistType2);
+        }
+    }
+
+    for(const OspfExternal &ext : externals)
     {
         if(hasNormal)
         {
@@ -1260,6 +1410,7 @@ void Router::OspfSync()
     routeTable.erase(std::remove_if(routeTable.begin(), routeTable.end(),
                      [](const Route &r) { return r.ospf; }),
                      routeTable.end());
+    MarkRoutesDirty();
 
     ospfAreaNets.clear();
     ospfAreaRouterDist.clear();
@@ -1320,6 +1471,7 @@ void Router::OspfSync()
             continue;
 
         routeTable.push_back(Route(dst, rit->second.nextHop, false));
+        MarkRoutesDirty();
         Route &nr = routeTable.back();
         nr.metric = uint16_t(metric > 65535 ? 65535 : metric);
         nr.dynamic = true;
@@ -1358,7 +1510,7 @@ void Router::OspfSyncArea(uint32_t area)
             {
                 if(l.type == 2)
                     adj[v].push_back({ nkey(l.id.value), l.metric });
-                else if(l.type == 1)
+                else if(l.type == 1 || l.type == 4)
                     adj[v].push_back({ rkey(l.id.value), l.metric });
             }
         }
@@ -1436,12 +1588,26 @@ void Router::OspfSyncArea(uint32_t area)
             if(ifc.area.value != area)
                 continue;
             auto it = ifc.neighbors.find(rid);
-            if(it != ifc.neighbors.end() && it->second.state >= OspfNbrFull)
+            if(it == ifc.neighbors.end() ||
+               it->second.state < OspfNbrFull)
+                continue;
+            if(ifc.virtualLink)
             {
-                ip = it->second.ip;
-                port = ifc.port;
+                const Route *r = FindRoute(Ipv4(rid));
+                if(!r)
+                    continue;
+                Ipv4 nh = r->direct ? Ipv4(rid) : r->nextHop;
+                Port *p = r->learnedFromPort ? r->learnedFromPort
+                                             : PortForNextHop(nh);
+                if(!p)
+                    continue;
+                ip = nh;
+                port = p;
                 return true;
             }
+            ip = it->second.ip;
+            port = ifc.port;
+            return true;
         }
         return false;
     };
@@ -1461,6 +1627,7 @@ void Router::OspfSyncArea(uint32_t area)
             if(r.ospf && r.dst == dst && r.metric <= metric)
                 return;
         routeTable.push_back(Route(dst, nh, false));
+        MarkRoutesDirty();
         Route &nr = routeTable.back();
         nr.metric = uint16_t(metric > 65535 ? 65535 : metric);
         nr.dynamic = true;
@@ -1678,6 +1845,7 @@ void Router::OspfSyncArea(uint32_t area)
         if(blocked)
             continue;
         routeTable.push_back(Route(dst, rit->second.nextHop, false));
+        MarkRoutesDirty();
         Route &nr = routeTable.back();
         nr.metric = uint16_t(metric > 65535 ? 65535 : metric);
         nr.dynamic = true;
@@ -1794,7 +1962,8 @@ void Router::OspfOriginateSummaries()
     for(OspfInterface &ifc : ospfIfaces)
     {
         areas.insert(ifc.area.value);
-        direct[ifc.area.value].insert(ifc.port->subnet);
+        if(!ifc.virtualLink && ifc.port)
+            direct[ifc.area.value].insert(ifc.port->subnet);
     }
     for(const auto &kv : ospfAreaNets)
         areas.insert(kv.first);
@@ -1808,6 +1977,57 @@ void Router::OspfOriginateSummaries()
         if(sit == ospfAreaNets.end())
             continue;
 
+        std::set<Ipv4Subnet> suppressed;
+        std::vector<std::pair<Ipv4Subnet, uint32_t>> aggregates;
+        auto shit = ospfSummaries.find(src);
+        if(shit != ospfSummaries.end())
+        {
+            for(const OspfSummary &sum : shit->second)
+            {
+                bool matched = false;
+                uint32_t metric = 0;
+                for(const auto &net : sit->second)
+                {
+                    if(net.first.prefix < sum.dst.prefix ||
+                       !sum.dst.Contains(net.first.network))
+                        continue;
+                    matched = true;
+                    suppressed.insert(net.first);
+                    if(net.second > metric)
+                        metric = net.second;
+                }
+                if(matched && !sum.notAdvertise)
+                    aggregates.push_back({ sum.dst, metric });
+            }
+        }
+
+        auto advertise = [&](uint32_t dst, const Ipv4Subnet &net,
+                             uint32_t metric)
+        {
+            auto &lsas = ospfLsdb[dst];
+            OspfLsa s;
+            s.header.type = OspfPacket::SummaryLsa;
+            s.header.options = 0x02;
+            s.header.id = net.network;
+            s.header.advRouter = Ipv4(ospfRouterId);
+            s.mask = net.Mask();
+            s.metric = metric > 0xFFFFFFu ? 0xFFFFFFu : metric;
+
+            auto key = std::make_tuple(uint8_t(OspfPacket::SummaryLsa),
+                                       s.header.id.value, ospfRouterId);
+            desired[dst].insert(key);
+            auto it = lsas.find(key);
+            bool changed = (it == lsas.end()) ||
+                           it->second.mask.value != s.mask.value ||
+                           it->second.metric != s.metric;
+            if(!changed)
+                return;
+            s.header.seq = (it == lsas.end())
+                ? 0x80000001u : (it->second.header.seq + 1);
+            lsas[key] = s;
+            OspfFlood(dst, s, nullptr);
+        };
+
         for(uint32_t dst : areas)
         {
             if(src == dst)
@@ -1815,33 +2035,16 @@ void Router::OspfOriginateSummaries()
             if(backbone && src != 0 && dst != 0)
                 continue;
 
-            auto &lsas = ospfLsdb[dst];
             for(const auto &net : sit->second)
             {
-                if(direct[dst].count(net.first))
+                if(suppressed.count(net.first) || direct[dst].count(net.first))
                     continue;
-
-                OspfLsa s;
-                s.header.type = OspfPacket::SummaryLsa;
-                s.header.options = 0x02;
-                s.header.id = net.first.network;
-                s.header.advRouter = Ipv4(ospfRouterId);
-                s.mask = net.first.Mask();
-                s.metric = net.second > 0xFFFFFFu ? 0xFFFFFFu : net.second;
-
-                auto key = std::make_tuple(uint8_t(OspfPacket::SummaryLsa),
-                                           s.header.id.value, ospfRouterId);
-                desired[dst].insert(key);
-                auto it = lsas.find(key);
-                bool changed = (it == lsas.end()) ||
-                               it->second.mask.value != s.mask.value ||
-                               it->second.metric != s.metric;
-                if(!changed)
-                    continue;
-                s.header.seq = (it == lsas.end())
-                    ? 0x80000001u : (it->second.header.seq + 1);
-                lsas[key] = s;
-                OspfFlood(dst, s, nullptr);
+                advertise(dst, net.first, net.second);
+            }
+            for(const auto &agg : aggregates)
+            {
+                if(!direct[dst].count(agg.first))
+                    advertise(dst, agg.first, agg.second);
             }
         }
     }

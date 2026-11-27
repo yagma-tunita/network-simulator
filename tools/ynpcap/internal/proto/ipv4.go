@@ -11,6 +11,8 @@ type IPv4 struct {
 	Dst        [4]byte
 	Protocol   uint8
 	TTL        uint8
+	ECN        uint8
+	DF         bool
 	Payload    []byte
 	ChecksumOK bool
 }
@@ -38,6 +40,8 @@ func ParseIPv4(b []byte) (IPv4, error) {
 	copy(p.Dst[:], b[16:20])
 	p.Protocol = b[9]
 	p.TTL = b[8]
+	p.ECN = b[1] & 0x03
+	p.DF = binary.BigEndian.Uint16(b[6:8])&0x4000 != 0
 	p.ChecksumOK = Checksum(b[:ihl]) == 0
 	p.Payload = b[ihl:total]
 	return p, nil

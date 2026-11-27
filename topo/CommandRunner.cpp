@@ -103,13 +103,54 @@ namespace
                   << ",\"ip\":" << (p->hasIp
                         ? JsonQuote(p->ip.ToString() + "/" + std::to_string(p->subnet.prefix))
                         : std::string("null"))
+                  << ",\"ip6\":" << (p->hasIp6
+                        ? JsonQuote(p->ip6.ToString())
+                        : std::string("null"))
+                  << ",\"prefix6\":" << int(p->prefix6)
                   << ",\"vlan\":" << p->vlan
                   << ",\"tagged\":" << (p->tagged ? "true" : "false")
                   << ",\"state\":" << JsonQuote(StateName(p))
                   << ",\"rx\":" << p->rx << ",\"tx\":" << p->tx
                   << ",\"drop\":" << p->drop << "}";
             }
-            o << "]}";
+            o << "]";
+
+            const EndDevice *ed = dynamic_cast<const EndDevice *>(d);
+            const Router *rt = dynamic_cast<const Router *>(d);
+            if(ed && ed->hasGateway6)
+                o << ",\"gateway6\":" << JsonQuote(ed->gateway6.ToString());
+
+            auto emitNd6 = [&](const std::map<Ipv6, Mac> &cache) {
+                o << ",\"nd6\":[";
+                bool nf = true;
+                for(const auto &n : cache)
+                {
+                    if(!nf) o << ",";
+                    nf = false;
+                    o << "{\"ip\":" << JsonQuote(n.first.ToString())
+                      << ",\"mac\":" << JsonQuote(n.second.ToString()) << "}";
+                }
+                o << "]";
+            };
+            if(ed) emitNd6(ed->ndCache);
+            else if(rt) emitNd6(rt->nd6Cache);
+
+            if(rt)
+            {
+                o << ",\"routes6\":[";
+                bool rf = true;
+                for(const Ipv6Route &r : rt->route6)
+                {
+                    if(!rf) o << ",";
+                    rf = false;
+                    o << "{\"dst\":" << JsonQuote(r.dst.ToString())
+                      << ",\"next\":" << JsonQuote(r.nextHop.ToString())
+                      << ",\"direct\":" << (r.direct ? "true" : "false")
+                      << "}";
+                }
+                o << "]";
+            }
+            o << "}";
         }
         o << "],\"links\":[";
         first = true;
@@ -154,34 +195,48 @@ namespace
             { "add-port", "add-port <device> <mac> [<ip>/<prefix>]" },
             { "connect", "connect <dev:idx> <dev:idx> [delay]" },
             { "add-route", "add-route <router> <dst/p> <next-hop-ip>" },
+            { "add-route6", "add-route6 <router> <dst6/prefix> <next-hop-ip6>" },
             { "set-vlan", "set-vlan <dev:idx> <vid>" },
             { "set-trunk", "set-trunk <dev:idx> [native-vid]" },
             { "set-stp", "set-stp <switch> on|off" },
             { "set-stp-mode", "set-stp-mode <switch> stp|rstp" },
+            { "span", "span <switch> <src-dev:idx> <dst-dev:idx> | off" },
             { "set-bridge", "set-bridge <switch> <priority>" },
             { "stp-status", "stp-status <switch>" },
-            { "set-link", "set-link <dev:idx> down|up" },
+            { "set-link", "set-link <dev:idx> down|up|loss|dup|jitter|mtu|clear ..." },
             { "stats", "stats <device>" },
+            { "drop-stats", "drop-stats <device>" },
             { "devices", "devices" },
             { "links", "links" },
             { "ports", "ports <device>" },
             { "routes", "routes <router>" },
+            { "routes6", "routes6 <router>" },
             { "arp-table", "arp-table <device>" },
+            { "nd6-table", "nd6-table <device>" },
             { "mac-table", "mac-table <switch>" },
             { "traceroute", "traceroute <device> <target-ip> [max-hops]" },
+            { "traceroute6", "traceroute6 <device> <ipv6> [max-hops]" },
             { "export", "export dot|svg <file>" },
             { "udp-echo", "udp-echo <device> on|off [port]" },
-            { "udp-send", "udp-send <device> <ip> <dport> <text...>" },
+            { "udp-send", "udp-send <device> <ip> <dport> [df] <text...>" },
             { "tcp-listen", "tcp-listen <device> on|off [port]" },
             { "tcp-connect", "tcp-connect <device> <ip> <port> [text...]" },
+            { "tcp-send", "tcp-send <device> <text...>" },
             { "tcp-keepalive", "tcp-keepalive <device> on [idle interval count]|off" },
             { "tcp-status", "tcp-status <device>" },
             { "tcp-backlog", "tcp-backlog <device> <1-1024>" },
+            { "tcp-congestion", "tcp-congestion <device> reno|cubic" },
+            { "tcp-tlp", "tcp-tlp <device> on|off" },
+            { "tcp-prr", "tcp-prr <device> on|off" },
+            { "tcp-rack", "tcp-rack <device> on|off" },
+            { "tcp-pacing", "tcp-pacing <device> on|off" },
+            { "tcp-port-range", "tcp-port-range <device> <min> <max>" },
             { "dhcp-server", "dhcp-server <device> on <start> <end> <prefix> <gateway> [dns] | off" },
             { "dhcp-client", "dhcp-client <device> [port-index]" },
             { "dhcp-lease-time", "dhcp-lease-time <device> <seconds>" },
             { "dhcp-release", "dhcp-release <device>" },
             { "dhcp-relay", "dhcp-relay <router> <dev:idx> <server-ip>|off" },
+            { "ecn-mark", "ecn-mark <router> <dev:idx> on|off" },
             { "dns-server", "dns-server <device> on|off" },
             { "dns-ttl", "dns-ttl <device> <seconds>" },
             { "dns-negative-ttl", "dns-negative-ttl <device> <seconds>" },
@@ -216,15 +271,20 @@ namespace
             { "rip-status", "rip-status <router>" },
             { "ospf", "ospf <router> on|off" },
             { "ospf-status", "ospf-status <router>" },
+            { "ospf-router-id", "ospf-router-id <router> <id>" },
             { "ospf-auth", "ospf-auth <router> none|simple <password>|md5|sha1|sha256 <key-id> <key>" },
             { "ospf-cost", "ospf-cost <router> <dev:idx> <1-65535>" },
             { "ospf-passive", "ospf-passive <router> <dev:idx> on|off" },
             { "ospf-area", "ospf-area <router> <dev:idx> <area-id>" },
             { "ospf-area-type", "ospf-area-type <router> <area-id> stub|nssa|normal" },
+            { "ospf-summary", "ospf-summary <router> <area-id> <prefix> [not-advertise] | clear" },
             { "ospf-external", "ospf-external <router> <ip/prefix> [metric]|clear" },
+            { "ospf-default-originate", "ospf-default-originate <router> on|off [metric] [type1|type2]" },
+            { "ospf-redistribute", "ospf-redistribute <router> connected|static|off [metric] [type1|type2]" },
             { "tcp-lite-echo", "tcp-lite-echo <device> on|off [port]" },
             { "tcp-lite-echo-client", "tcp-lite-echo-client <device> <ip> <port> <text...>" },
             { "acl", "acl <router> in|out allow|deny <src/p> <dst/p> <proto|any>" },
+            { "acl6", "acl6 <router> in|out allow|deny <src6/p> <dst6/p> <proto|any>" },
             { "map", "map" },
             { "generate", "generate tree <depth> <fanout>" },
             { "remove-device", "remove-device <name>" },
@@ -232,9 +292,12 @@ namespace
             { "disconnect", "disconnect <dev:idx>" },
             { "rename-device", "rename-device <old> <new>" },
             { "set-ip", "set-ip <dev:idx> <ip>/<prefix>" },
+            { "set-ip6", "set-ip6 <dev:idx> <ipv6>" },
             { "set-gateway", "set-gateway <device> <gw-ip>" },
+            { "set-gateway6", "set-gateway6 <device> <gw-ipv6>" },
             { "arp", "arp <device> <target-ip>" },
             { "ping", "ping <device> <target-ip> [ttl]" },
+            { "ping6", "ping6 <device> <ipv6>" },
             { "state", "state" },
             { "pcap", "pcap <file> | pcap off" },
             { "save", "save <file.yn>" },
@@ -471,36 +534,51 @@ void PrintHelp()
         "  add-port   <device> <mac> [<ip>/<prefix>]\n"
         "  connect    <dev:idx> <dev:idx> [delay]\n"
         "  add-route  <router> <dst/p> <next-hop-ip>\n"
+        "  add-route6 <router> <dst6/prefix> <next-hop-ip6>\n"
         "  arp        <device> <target-ip>\n"
         "  ping       <device> <target-ip> [ttl]\n"
+        "  ping6      <device> <ipv6>\n"
         "  set-gateway <device> <gw-ip>\n"
+        "  set-gateway6 <device> <gw-ipv6>\n"
         "  set-vlan   <dev:idx> <vid>\n"
         "  set-trunk  <dev:idx> [native-vid]\n"
         "  set-stp    <switch> on|off\n"
         "  set-stp-mode <switch> stp|rstp\n"
+        "  span       <switch> <src-dev:idx> <dst-dev:idx> | off\n"
         "  set-bridge <switch> <priority>\n"
         "  stp-status <switch>\n"
-        "  set-link   <dev:idx> down|up|loss|dup|jitter|clear ...\n"
+        "  set-link   <dev:idx> down|up|loss|dup|jitter|mtu|clear ...\n"
         "  stats      <device>\n"
+        "  drop-stats <device>\n"
         "  devices | links\n"
         "  ports      <device>\n"
         "  routes     <router>\n"
         "  arp-table  <device>\n"
+        "  nd6-table  <device>\n"
         "  mac-table  <switch>\n"
         "  traceroute <device> <target-ip> [max-hops]\n"
+        "  traceroute6 <device> <ipv6> [max-hops]\n"
         "  export     dot|svg <file>\n"
         "  udp-echo   <device> on|off [port]\n"
-        "  udp-send   <device> <ip> <dport> <text...>\n"
+        "  udp-send   <device> <ip> <dport> [df] <text...>\n"
         "  tcp-listen <device> on|off [port]\n"
         "  tcp-connect <device> <ip> <port> [text...]\n"
+        "  tcp-send   <device> <text...>\n"
         "  tcp-keepalive <device> on [idle interval count]|off\n"
         "  tcp-status <device>\n"
         "  tcp-backlog <device> <1-1024>\n"
+        "  tcp-congestion <device> reno|cubic\n"
+        "  tcp-tlp <device> on|off\n"
+        "  tcp-prr <device> on|off\n"
+        "  tcp-rack <device> on|off\n"
+        "  tcp-pacing <device> on|off\n"
+        "  tcp-port-range <device> <min> <max>\n"
         "  dhcp-server <device> on <start> <end> <prefix> <gateway> [dns] | off\n"
         "  dhcp-client <device> [port-index]\n"
         "  dhcp-lease-time <device> <seconds>\n"
         "  dhcp-release <device>\n"
         "  dhcp-relay <router> <dev:idx> <server-ip>|off\n"
+        "  ecn-mark   <router> <dev:idx> on|off\n"
         "  dns-server <device> on|off\n"
         "  dns-ttl    <device> <seconds>\n"
         "  dns-negative-ttl <device> <seconds>\n"
@@ -535,15 +613,20 @@ void PrintHelp()
         "  rip-status <router>\n"
         "  ospf       <router> on|off\n"
         "  ospf-status <router>\n"
+        "  ospf-router-id <router> <id>\n"
         "  ospf-auth  <router> none|simple <password>|md5|sha1|sha256 <key-id> <key>\n"
         "  ospf-cost  <router> <dev:idx> <1-65535>\n"
         "  ospf-passive <router> <dev:idx> on|off\n"
         "  ospf-area  <router> <dev:idx> <area-id>\n"
         "  ospf-area-type <router> <area-id> stub|nssa|normal\n"
+        "  ospf-summary <router> <area-id> <prefix> [not-advertise] | clear\n"
         "  ospf-external <router> <ip/prefix> [metric]|clear\n"
+        "  ospf-default-originate <router> on|off [metric] [type1|type2]\n"
+        "  ospf-redistribute <router> connected|static|off [metric] [type1|type2]\n"
         "  tcp-lite-echo   <device> on|off [port]\n"
         "  tcp-lite-echo-client <device> <ip> <port> <text...>\n"
         "  acl        <router> in|out allow|deny <src/p> <dst/p> <proto|any>\n"
+        "  acl6       <router> in|out allow|deny <src6/p> <dst6/p> <proto|any>\n"
         "  map\n"
         "  generate   tree <depth> <fanout>\n"
         "  remove-device <name>\n"
@@ -551,6 +634,7 @@ void PrintHelp()
         "  disconnect    <dev:idx>\n"
         "  rename-device <old> <new>\n"
         "  set-ip     <dev:idx> <ip>/<prefix>\n"
+        "  set-ip6    <dev:idx> <ipv6>\n"
         "  state      print a JSON snapshot (automation)\n"
         "  pcap       <file> | pcap off                 # capture frames to pcap\n"
         "  save       <file.yn>                         # export scene (.yn)\n"

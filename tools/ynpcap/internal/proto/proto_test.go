@@ -11,6 +11,8 @@ func TestParseIPv4TCPOptions(t *testing.T) {
 	binary.BigEndian.PutUint16(ip[2:4], 20)
 	ip[8] = 64
 	ip[9] = 6
+	ip[1] = 0x02
+	binary.BigEndian.PutUint16(ip[6:8], 0x4000)
 	copy(ip[12:16], []byte{10, 0, 0, 1})
 	copy(ip[16:20], []byte{10, 0, 0, 2})
 
@@ -35,6 +37,12 @@ func TestParseIPv4TCPOptions(t *testing.T) {
 	}
 	if parsedIP.ChecksumOK {
 		t.Fatal("expected invalid ipv4 checksum in synthetic packet")
+	}
+	if parsedIP.ECN != 2 {
+		t.Fatalf("ecn = %d", parsedIP.ECN)
+	}
+	if !parsedIP.DF {
+		t.Fatal("expected DF flag")
 	}
 
 	tc, err := ParseTCP(tcp, parsedIP.Src, parsedIP.Dst)

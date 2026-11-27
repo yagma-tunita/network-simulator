@@ -1522,6 +1522,491 @@ Conventions:
 
 ---
 
+## Phase 91 — TCP CUBIC congestion control (2026-11-26)
+
+- Added a selectable congestion-control mode on `TcpConnection`: Reno remains
+  the default; CUBIC-style loss epochs track W_max/K, use beta=0.7 reduction,
+  cubic growth with a Reno-friendly fallback, and retain existing recovery/SACK
+  behavior.
+- Added `tcp-congestion <device> reno|cubic`; the setting is applied to new
+  accepted, active, DNS-over-TCP and transfer connections.
+- Added `tcp_cubic` scenario and a loss-path unit test covering CUBIC state
+  initialization and retransmission success.
+- Tests: 427 unit checks, 96 scenarios; PowerShell and Go tests pass;
+  coverage 58.8%; soak and perf green; build artifacts preserved.
+
+---
+
+## Phase 92 — TCP Tail Loss Probe (2026-11-26)
+
+- Added Tail Loss Probe scheduling when unacked data exists in Established:
+  PTO uses SRTT + 4·RTTVAR (fallback RTO), clamped before RTO, and is
+  generation-guarded/cancelled on ACK/progress, RTO and abort.
+- A TLP probe retransmits the highest unacked segment, increments probe/
+  retransmit counters, and lets the normal ACK/RTO path complete recovery.
+- Added `tcp-tlp <device> on|off`, applied to all new TCP connection paths, with
+  a `tcp_tlp` scenario and unit test.
+- Tests: 430 unit checks, 97 scenarios; PowerShell and Go tests pass;
+  coverage 58.9%; soak and perf green; build artifacts preserved.
+
+---
+
+## Phase 93 — TCP PRR-style recovery pacing (2026-11-26)
+
+- Added recovery pacing with delivered/out accounting and a per-recovery send
+  credit; new-data sends are capped by PRR credit while recovery retransmits
+  continue independently.
+- ACK progress adds proportional credit; recovery exit/RTO/abort reset live
+  state, while `prrAcked` retains a monotonic diagnostic counter.
+- Added `tcp-prr <device> on|off`, a `tcp_prr` scenario and a loss-path unit test.
+- Tests: 433 unit checks, 98 scenarios; PowerShell and Go tests pass;
+  coverage 58.9%; soak and perf green; build artifacts preserved.
+
+---
+
+## Phase 94 — Efficiency and code audit (2026-11-26)
+
+- TCP ACK processing now trims/erases unacked segments in place via map node
+  extraction instead of rebuilding and copying the whole map on every ACK.
+- TCP connections now use stable list storage plus a tuple hash index
+  (`localPort`, `remoteIp`, `remotePort`), replacing per-packet O(connections)
+  scans; the last-hit fast path remains.
+- Removed the per-packet full closed-connection sweep; cleanup now runs on
+  accept/cookie/connect/status paths where capacity or reporting matters.
+- Switch MAC learning now uses an `unordered_map` with a MAC/VLAN hash; the
+  diagnostic `mac-table` output sorts keys to retain deterministic display.
+- Router longest-prefix lookup now rebuilds a compact binary prefix trie on
+  route-table changes; steady-state forwarding is O(32) instead of O(routes).
+- ARP pending sends now use a next-hop counter index instead of scanning the
+  pending vector for every UDP/TCP/ICMP send.
+- TCP setup is centralized in `NewTcpConnection`, removing repeated scheduler,
+  option, callback and keepalive initialization from six creation paths.
+- Audit candidates left for later (not implemented): event arena allocation and
+  splitting `EndDevice.cpp` by DNS/DHCP domains.
+- Tests: 433 unit checks, 98 scenarios; PowerShell and Go tests pass;
+  coverage 59.5%; soak and perf green; build artifacts preserved.
+
+---
+
+## Phase 95 — OSPF default origination and redistribution (2026-11-26)
+
+- Added `ospf-default-originate` and `ospf-redistribute` for connected/static
+  routes, with metric and Type 1/Type 2 selection.
+- External LSA origination now merges manual, default and redistributed routes
+  with duplicate suppression; Type 5/Type 7 paths and withdrawals reuse the
+  existing external LSDB machinery.
+- Added route-change refresh: static route changes while OSPF is enabled
+  re-originate externals; defaults/redistribution apply immediately.
+- New `ospf_default` (default route ping) and `ospf_redistribute` (learned static
+  external route) scenarios.
+- Tests: 433 unit checks, 100 scenarios; PowerShell and Go tests pass;
+  coverage 59.6%; soak and perf green; build artifacts preserved.
+
+---
+
+## Phase 96 — OSPF area range summaries (2026-11-26)
+
+- Added `ospf-summary <router> <area> <prefix> [not-advertise] | clear`.
+- Area ranges aggregate matching component networks into one Type 3 LSA with
+  the maximum component metric and suppress the covered component summaries;
+  `not-advertise` suppresses both the range and its components.
+- Range changes regenerate summaries immediately and withdraw stale LSAs via
+  the existing desired/flush path.
+- New `ospf_summary` scenario verifies a /23 aggregate and component suppression.
+- Tests: 433 unit checks, 101 scenarios; PowerShell and Go tests pass;
+  coverage 59.7%; soak and perf green; build artifacts preserved.
+
+---
+
+## Phase 97 — TCP RACK-style loss detection (2026-11-26)
+
+- Track per-segment send timestamps and derive a RACK RTT/reorder window.
+- On duplicate ACKs and SACK blocks, retransmit the oldest uncovered hole when
+  its send time exceeds the reorder window; retransmissions update timestamps
+  and avoid duplicate hole selection.
+- Added `tcp-rack <device> on|off`, applied to all new TCP connection paths, with
+  a `tcp_rack` scenario and loss-path unit test.
+- Tests: 436 unit checks, 102 scenarios; PowerShell and Go tests pass;
+  coverage 59.8%; soak and perf green; build artifacts preserved.
+
+---
+
+## Phase 98 — TCP pacing (2026-11-26)
+
+- Added optional pacing based on `cwnd × MSS / SRTT`; paced sends schedule a
+  generation-guarded follow-up event instead of emitting the whole cwnd burst.
+- Pacing is disabled by default to preserve existing burst behavior; enable with
+  `tcp-pacing <device> on`.
+- Applies to all new active/passive and DNS-over-TCP connection paths.
+- Added `tcp_pacing` scenario and a paced bulk-transfer unit test.
+- Tests: 438 unit checks, 103 scenarios; PowerShell and Go tests pass;
+  coverage 59.9%; soak and perf green; build artifacts preserved.
+
+---
+
+## Phase 99 — TCP ephemeral port lifecycle (2026-11-26)
+
+- Active TCP connections now allocate local ports from a bounded cursor range
+  (`tcp-port-range`, default 40000..65535), skipping ports already used by any
+  connection; exhaustion reports `tcp: no local port`.
+- Existing default first port remains 40000 for compatibility with diagnostics.
+- Added `tcp-port-range` and a dual-connection `tcp_ports` scenario verifying
+  collision-free 40000/40001 allocation.
+- Tests: 438 unit checks, 104 scenarios; PowerShell and Go tests pass;
+  coverage 59.9%; soak and perf green; build artifacts preserved.
+
+---
+
+## Phase 100 — TCP ECN (2026-11-26)
+
+- Added IPv4 ECN bits (Not-ECT/ECT/CE) to the packet codec and equality.
+- TCP negotiates ECN using SYN ECE/CWR and SYN-ACK ECE; data uses ECT(0).
+- Receivers echo CE using ECE ACKs and clear after CWR; senders reduce
+  congestion state once per CE episode and set CWR on the next data segment.
+- Added router `ecn-mark <router> <dev:idx> on|off` for deterministic CE marking.
+- `tcp-status` now reports `ecn=` and `ce=` per connection.
+- New `tcp_ecn` scenario and ECN negotiation unit test.
+- Tests: 441 unit checks, 105 scenarios; PowerShell and Go tests pass;
+  coverage 59.8%; soak and perf green; build artifacts preserved.
+
+---
+
+## Phase 101 — TCP MSS and link MTU (2026-11-26)
+
+- Link objects now carry an MTU (`set-link ... mtu 576..1500`).
+- TCP connections derive an MSS limit from the ingress/egress link MTU and
+  clamp the negotiated peer MSS; a 576-byte link yields MSS 536.
+- Active, passive and SYN-cookie paths apply the limit; IP fragmentation remains
+  outside this increment.
+- `tcp-status` now reports `mss=`.
+- Added `tcp_mtu` scenario and MTU/MSS verification.
+- Tests: 441 unit checks, 106 scenarios; PowerShell and Go tests pass;
+  coverage 59.9%; soak and perf green; build artifacts preserved.
+
+---
+
+## Phase 102 — IPv4 fragmentation and reassembly (2026-11-26)
+
+- `IpPacket` now carries identification, the MF flag and fragment offset; the
+  codec preserves these fields across encode/decode and equality checks.
+- Egress links split IPv4 datagrams larger than the configured link MTU into
+  MTU-sized fragments with 8-byte-aligned payloads, a per-link IP ID, and the
+  original TTL/ECN and Ethernet/VLAN framing.
+- Ingress ports reassemble fragments by source/destination, IP ID and protocol
+  using bounded per-port buffers that are pruned after 300 seconds; complete
+  datagrams re-enter the normal device receive path.
+- Added direct-link and router-transit fragmentation scenarios with a 553-byte
+  UDP payload over a 576-byte link; added fragment codec unit checks.
+- ICMP Packet Too Big / DF-based PMTU discovery was not modeled in this
+  increment; Phase 103 adds DF and ICMP Fragmentation Needed reporting.
+- Tests: 449 unit checks, 108 scenarios; PowerShell and Go tests pass;
+  coverage 58.9% (floor 54%); soak and perf green; build artifacts preserved.
+
+---
+
+## Phase 103 — DF and ICMP Fragmentation Needed (2026-11-26)
+
+- `IpPacket` now carries the Don't Fragment flag through encode/decode and
+  equality checks; link fragmentation is skipped for DF datagrams.
+- Routers check the egress link MTU before forwarding: oversized DF datagrams
+  are dropped and answered with ICMP Destination Unreachable / Fragmentation
+  Needed (code 4) carrying the next-hop MTU and quoting the original packet.
+- `IcmpMessage` models the next-hop MTU field for code 4 while preserving the
+  existing echo id/sequence encoding.
+- `udp-send <dev> <ip> <dport> df <text...>` sets DF, and endpoints print
+  `icmp frag needed from <router> mtu=<bytes>` when the report arrives.
+- Added `fragment_df` scenario and DF/ICMP codec unit checks. TCP path-MTU
+  adaptation (reacting to ICMP reports by reducing MSS/segment size) remains
+  future work.
+- Tests: 453 unit checks, 109 scenarios; PowerShell and Go tests pass;
+  coverage 59.0% (floor 54%); soak and perf green; build artifacts preserved.
+
+---
+
+## Phase 104 — TCP path MTU discovery (2026-11-26)
+
+- TCP data segments set DF. Segment sizing subtracts IP/TCP headers and the
+  timestamp option so a full-size segment fits the current path MTU.
+- `TcpConnection` tracks `pathMtu`; local egress-MTU changes refresh the path
+  MSS before sending, and ICMP Fragmentation Needed reports lower it.
+- On a path-MTU decrease, unacked bytes are rewound to `sndUna`, the send
+  buffer is re-pumped with the smaller segment size, and stale RTO/TLP/pacing
+  state is cleared.
+- Endpoints identify the affected connection from the quoted IP/TCP ports in
+  the ICMP report and print `icmp frag needed from <router> mtu=<bytes>`.
+- Added `tcp-send <device> <text...>` for established connections and
+  `pmtu=` in `tcp-status`.
+- Added the `tcp_pmtu` scenario (1500-byte send after a 576-byte egress link
+  change) and a path-MTU unit test.
+- Tests: 461 unit checks, 110 scenarios; PowerShell and Go tests pass;
+  coverage 59.1% (floor 54%); soak and perf green; build artifacts preserved.
+
+---
+
+## Phase 105 — Drop-reason observability (2026-11-26)
+
+- Port drop counters now carry fixed-slot reasons: link-down, loss, mtu, acl,
+  ttl, no-route, no-egress, arp-pending, fragment, stp, vlan, parse, and
+  resource.
+- Links, routers, switches, and the fragment reassembler count reasons at the
+  existing drop sites without changing forwarding decisions.
+- Added `drop-stats <device>`, which prints per-port totals plus non-zero
+  reason counts; the total still matches the `stats` `drop=` value.
+- Added a combined ACL/MTU scenario (`drop_stats`) and drop-reason unit checks.
+- Tests: 466 unit checks, 111 scenarios; PowerShell and Go tests pass;
+  coverage 59.1% (floor 54%); soak and perf green; build artifacts preserved.
+
+---
+
+## Phase 106 — TCP scope and status clarification (2026-11-26)
+
+- Documented TCP against the product's actual goal: a deterministic offline
+  simulator with byte-accurate behavior, not a live-wire or production stack.
+- README now states that live-stack interoperability, TAP bridging, and
+  replacing an OS TCP stack are out of scope; the live bridge stays archived.
+- Reworked the roadmap item into offline PCAP conformance against reference
+  captures (no live networking) and added a simulator-scope TCP status section.
+- Clarified the same scope in the operator guide and man page.
+- No code or test changes; 466 unit checks and 111 scenarios remain green.
+
+---
+
+## Phase 107 — Offline TCP PCAP conformance gate (2026-11-26)
+
+- `ynpcap` now parses IPv4 DF and ECN codepoints and tracks TCP data segments,
+  repeated sequence numbers, SACK blocks, ECN/CE, and DF usage.
+- Added MSS-fit validation: a data payload larger than the peer's advertised
+  MSS is reported as a conformance issue.
+- Added the `tcp_pcap` scenario (lossy handshake/data capture) and the
+  `make pcapcheck` gate; `make check` now includes it.
+- Added PowerShell `pcapcheck` support to `Makefile.win`.
+- Tests: 466 unit checks, 112 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 59.1% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 108 — TCP basic PMTU growth re-probing (2026-11-26)
+
+- TCP connections now track the negotiated `peerMss` separately from the
+  path-limited MSS, allowing segment size to grow back after path recovery.
+- Added a `pmtuCeiling` from the local egress MTU, a 60-second hold, and a
+  growth probe that runs only when new data is queued; the probe raises
+  `pathMtu` toward the ceiling and restores `mss` up to `peerMss`.
+- A failed growth probe still falls back through ICMP Fragmentation Needed and
+  re-segments unacked data at the lower MSS.
+- Added the `tcp_pmtu_grow` scenario (shrink to 576, restore to 1500, wait,
+  send new data) and path-MTU growth unit checks.
+- Tests: 470 unit checks, 113 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 59.1% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 109 — IPv6 host addressing, NDP, and ping6 (2026-11-26)
+
+- Added `Ipv6Packet` (40-byte header codec) and ICMPv6 messages with
+  pseudo-header checksums, echo request/reply, and Neighbor Solicitation/
+  Advertisement with source/target link-layer options.
+- Ports can carry an optional IPv6 address (`set-ip6`), and `ping6` resolves
+  the target through Neighbor Discovery and prints ICMPv6 echo replies.
+- Ethernet now recognizes the IPv6 EtherType; hosts accept solicited-node
+  multicast frames for NDP while keeping existing ARP/IPv4 behavior unchanged.
+- Added `ipv6_ping` scenario and IPv6 packet/ICMPv6/NDP codec unit checks.
+- Scope is intentionally host-only on one shared or switched segment; IPv6
+  routing, extension headers, and IPv6 fragmentation remain future work.
+- Tests: 484 unit checks, 114 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 58.4% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 110 — IPv6 scene persistence and diagnostics (2026-11-26)
+
+- `.yn` save files now include each port's IPv6 address; load replays
+  `set-ip6` after creating the port.
+- `state` JSON includes `ip6` (or null) per port, and `ports <device>` prints
+  an `ip6=` field.
+- Added the `ipv6_persist` scenario (save, reset with `new`, load, `ping6`) and
+  extended the JSON round-trip unit checks to assert `set-ip6` is emitted.
+- Cleanup scripts now remove the IPv6 test scene and capture artifacts.
+- Tests: 486 unit checks, 115 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 58.4% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 111 — IPv6 routing and forwarding (2026-11-26)
+
+- Added `Ipv6Subnet` with 128-bit prefix normalization, containment, ordering,
+  and `addr/prefix` parsing.
+- Ports now carry an IPv6 prefix (`set-ip6 ...[/prefix]`, default 64); routers
+  install connected IPv6 routes automatically when addresses are configured.
+- Added IPv6 static routes and gateways (`add-route6`, `set-gateway6`) plus the
+  `routes6` diagnostic. IPv6 routes and gateways round-trip through
+  `save`/`load`.
+- Routers forward IPv6 with longest-prefix lookup, hop-limit decrement, and NDP
+  next-hop resolution; pending packets are queued until Neighbor Advertisements
+  arrive. Routers also answer NS for their own addresses and ICMPv6 echo.
+- Added the `ipv6_route` scenario (PC1 -> R1 -> PC2 with `ping6` and `routes6`)
+  and IPv6 subnet unit checks.
+- OSPFv3 and IPv6 extension headers/fragmentation remain future work.
+- Tests: 492 unit checks, 116 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 58.3% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 112 — IPv6 diagnostics and error reporting (2026-11-26)
+
+- Added `nd6-table <device>` for host and router IPv6 neighbor caches.
+- Routers now return ICMPv6 Destination Unreachable when no IPv6 route/egress
+  exists and Time Exceeded when the hop limit reaches zero, quoting the original
+  IPv6 packet.
+- Endpoints print `icmp6 unreachable from ...` and `icmp6 time exceeded from
+  ...`; the IPv6 echo path is unchanged.
+- Added `ipv6_unreachable` and extended `ipv6_route` with an `nd6-table` check.
+- Tests: 492 unit checks, 117 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 58.3% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 113 — IPv6 ping timeouts and pending cleanup (2026-11-26)
+
+- Added per-`ping6` outstanding state and a timeout event; unanswered probes
+  print `ping6 timeout from <target> seq=<n>`.
+- Timeouts/ICMPv6 errors remove matching pending NDP echo entries and
+  outstanding probe state.
+- ICMPv6 Destination Unreachable / Time Exceeded now parse the quoted echo
+  request to cancel the matching probe instead of leaving it to time out.
+- Added the `ipv6_timeout` scenario and kept existing IPv6 route/error scenarios.
+- Tests: 492 unit checks, 118 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 58.4% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 114 — IPv6 traceroute (2026-11-26)
+
+- Added `traceroute6 <device> <ipv6> [max-hops]` using hop-limited ICMPv6 Echo
+  Requests and per-hop Time Exceeded reports.
+- Tracks hop sequence numbers, prints `hop N: <router>`, target with `(target)`,
+  and `*` on timeout; schedules the next hop and stops at target/max hops.
+- Reused NDP resolution plus pending echo state; timeout and error paths clear
+  the matching hop state.
+- Added the `ipv6_traceroute` scenario (PC1 -> R1 -> PC2).
+- Tests: 492 unit checks, 119 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 58.4% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 115 — IPv6 ACLs (2026-11-26)
+
+- Added ordered IPv6 ACLs with `acl6 <router> in|out allow|deny <src6/p>
+  <dst6/p> <proto|any>`.
+- Inbound rules are checked before local/forward processing; outbound rules are
+  checked before forwarding. Matching drops increment the `acl` drop reason.
+- Protocol selectors accept `any`, `icmp`/`icmpv6` (next header 58), `tcp`, and
+  `udp`.
+- Added the `ipv6_acl` scenario (deny PC1->PC2 ICMPv6, verify timeout and
+  `drop-stats`).
+- Tests: 492 unit checks, 120 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 58.5% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 116 — ACL persistence (2026-11-26)
+
+- `.yn` save files now include ordered IPv4 and IPv6 ACL rules (direction,
+  action, source/destination prefixes, protocol).
+- `load` replays `acl`/`acl6` commands after ports/routes/gateways, preserving
+  rule order for first-match semantics.
+- Extended `ipv6_acl` to save, reset, and reload its ACL before probing, and
+  added `acl_persist` for IPv4 ACL round-trip.
+- Cleanup scripts remove the new saved-scene artifacts.
+- Tests: 492 unit checks, 121 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 58.5% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 117 — IPv6 drop accounting and pending aging (2026-11-26)
+
+- IPv6 router drops now record fixed reasons: parse, acl, no-route, no-egress,
+  ttl, and resource (pending-queue exhaustion).
+- `AgePending6` prunes queued IPv6 packets older than `kPendingTimeout` and
+  increments `droppedPending6`.
+- Extended `ipv6_unreachable` to assert `no-route=1` through `drop-stats`.
+- Tests: 492 unit checks, 121 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 58.5% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 118 — NAT persistence (2026-11-26)
+
+- `.yn` save files now include NAT enablement with inside/outside port refs and
+  static port-forward entries (`proto`, public port, inside IP/port).
+- `load` replays `nat` and `nat-port` after topology/routing/gateway/ACL setup.
+- Added `nat_persist` (save, `new`, load, TCP DNAT) and cleanup for the saved
+  scene.
+- Tests: 492 unit checks, 122 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 58.6% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 119 — IPv6 state JSON diagnostics (2026-11-26)
+
+- `state` now emits each host/router's `nd6` neighbor cache, IPv6 default
+  gateway (when configured), and each router's `routes6` table.
+- Added unit checks for the new state fields and preserved existing JSON shape
+  for IPv4 fields.
+- Tests: 497 unit checks, 122 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 58.6% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 120 — OSPF router ID configuration (2026-11-27)
+
+- Added `ospf-router-id <router> <id>`; the configured ID overrides the
+  highest-interface-IP default for LSAs, neighbor matching, and status.
+- Added `ospf_router_id` scenario and retained the existing OSPF suite.
+- Tests: 497 unit checks, 123 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 58.6% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 121 — Switch port mirroring (SPAN) (2026-11-27)
+
+- Added `span <switch> <src-dev:idx> <dst-dev:idx> | off`.
+- Frames received on the source port are copied to the monitor port through
+  normal egress VLAN/STP handling; the original forwarding path is unchanged.
+- Added the `span` scenario (source port 0 -> monitor port 2 with a ping) and
+  verified monitor-port counters.
+- Tests: 497 unit checks, 124 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 58.6% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 122 — SPAN persistence (2026-11-27)
+
+- `.yn` save files now include switch SPAN source/destination port refs; load
+  replays `span` after ports/links are created.
+- Extended the `span` scenario to save, reset with `new`, reload, and verify the
+  monitor counter; cleanup removes the saved scene.
+- Tests: 497 unit checks, 124 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 58.6% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
 ## Validation approach (2026-11-20)
 
 Each increment was verified with small, focused tests compiled against the

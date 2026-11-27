@@ -10,14 +10,23 @@ simulates IPv4/Ethernet networks (ARP, VLAN/802.1Q, MAC-learning switches,
 spanning tree, static routing, ICMP) on a deterministic logical clock.
 It runs an interactive command prompt, line-command scripts, Lua scripts, or
 loads \fB.yn\fR scene files. The prompt supports history, Tab completion, and
-Emacs-style line editing. Press Ctrl-C to interrupt a running simulation.
+Emacs-style line editing. It is an offline simulator: protocol stacks are
+simulated and do not connect to, bridge, or replace a live network stack.
+Press Ctrl-C to interrupt a running simulation.
 Diagnostics include \fBdevices\fR, \fBlinks\fR, \fBports\fR, \fBroutes\fR,
-\fBarp-table\fR, \fBmac-table\fR, \fBtraceroute\fR, and \fBexport dot|svg\fR.
+\fBroutes6\fR, \fBarp-table\fR, \fBnd6-table\fR, \fBmac-table\fR, \fBstats\fR, \fBdrop-stats\fR (drop reasons), \fBtraceroute\fR, and \fBexport dot|svg\fR.
+IPv6 host addressing, Neighbor Discovery, ICMPv6 echo/errors, \fBtraceroute6\fR
+and ping timeouts (\fBset-ip6\fR/\fBping6\fR/\fBtraceroute6\fR), connected/static routes (\fBadd-route6\fR), IPv6 gateways
+(\fBset-gateway6\fR), router forwarding with NDP next-hop resolution, and
+\fBnd6-table\fR diagnostics.
 UDP echo (\fBudp-echo\fR/\fBudp-send\fR), a real TCP service and client
-(\fBtcp-listen\fR/\fBtcp-connect\fR) with MSS/window-scale negotiation, SACK,
+(\fBtcp-listen\fR/\fBtcp-connect\fR/\fBtcp-send\fR) with MSS/window-scale negotiation, SACK,
 RTT-based retransmission, RST, keepalive, zero-window persist, simultaneous
 open/close, timestamps, delayed ACK/Nagle, SACK/DSACK recovery, SYN backlog and
-cookies, and \fBtcp-status\fR diagnostics; the deprecated
+cookies, Reno/CUBIC-style congestion control, TLP/PRR/RACK recovery, optional
+pacing, collision-checked ephemeral ports, ECN marking, MTU-aware TCP MSS,
+path-MTU discovery with DF and ICMP Fragmentation Needed, data re-segmentation,
+basic upward PMTU re-probing, IPv4 fragmentation/reassembly, and \fBtcp-status\fR diagnostics; the deprecated
 \fBtcp-lite-*\fR legacy lightweight transport (not TCP); a DHCP server/client
 (\fBdhcp-server\fR/\fBdhcp-client\fR/\fBdhcp-relay\fR) with lease renewal,
 rebind, expiry/reclaim, \fBdhcp-lease-time\fR and \fBdhcp-release\fR; a DNS
@@ -32,10 +41,13 @@ refresh/expire timers, IXFR journal/diagnostics/refresh fallback, bounded LRU
 caching and TTL clamps; source NAT/PAT and port
 forwarding (\fBnat\fR/\fBnat-port\fR/\fBnat-table\fR); RIP v2-lite dynamic
 routing (\fBrip\fR/\fBrip-status\fR); and an OSPFv2 implementation with
-per-area LSDB/SPF and ABR Type 3/4 summaries, Type 5 external routes, stub/NSSA areas (Type 7 translation), interface cost/passive policy and
+per-area LSDB/SPF and ABR Type 3/4 summaries, Type 5 external routes/default
+origination/redistribution, area summaries, stub/NSSA areas (Type 7 translation), interface
+cost/passive policy and
 simple-password, MD5, SHA-1 or SHA-256
 authentication (\fBospf\fR/\fBospf-status\fR/\fBospf-auth\fR/\fBospf-cost\fR/\fBospf-passive\fR/\fBospf-area\fR). Router
-\fBacl\fR rules, \fBset-link ... loss|dup|jitter|clear\fR impairment, an ASCII
+\fBacl\fR/\fBacl6\fR rules, \fBset-link ... loss|dup|jitter|mtu|clear\fR impairment,
+\fBspan\fR ingress port mirroring, an ASCII
 \fBmap\fR, \fBhelp <command>\fR, and \fBgenerate tree\fR are also available.
 .SH OPTIONS
 .TP
@@ -71,7 +83,7 @@ Run a scene or script file.
 .SH FILES
 .TP
 .I *.yn
-Scene file (JSON) with devices, ports, links, STP/routing/gateway settings, and an
+Scene file (JSON) with devices, ports, IPv4/IPv6 addresses, links, STP/routing/gateway/ACL/NAT/SPAN settings, and an
 optional layout array (ignored by the CLI).
 .TP
 .I *.txt

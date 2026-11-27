@@ -1,7 +1,11 @@
 #include "EndDevice.hpp"
 #include "Port.hpp"
+#include "../link/Link.hpp"
 #include "../core/IpPacket.hpp"
+#include "../core/Ipv6Packet.hpp"
+#include "../core/Ipv6Subnet.hpp"
 #include "../core/IcmpMessage.hpp"
+#include "../core/Icmpv6Message.hpp"
 #include "../core/UdpDatagram.hpp"
 #include "../core/TcpSegment.hpp"
 #include "../engine/Clock.hpp"
@@ -17,6 +21,25 @@
 
 namespace
 {
+    Ipv6 SolicitedNode(const Ipv6 &target)
+    {
+        Ipv6 out;
+        out.bytes[0] = 0xFF;
+        out.bytes[1] = 0x02;
+        out.bytes[11] = 0x01;
+        out.bytes[12] = 0xFF;
+        out.bytes[13] = target.bytes[13];
+        out.bytes[14] = target.bytes[14];
+        out.bytes[15] = target.bytes[15];
+        return out;
+    }
+
+    Mac SolicitedMac(const Ipv6 &target)
+    {
+        return Mac(0x33, 0x33, 0xFF, target.bytes[13],
+                   target.bytes[14], target.bytes[15]);
+    }
+
     struct PingTimeoutEvent : Event
     {
         EndDevice *dev;
@@ -28,6 +51,17 @@ namespace
         const char *Name() const override { return "ping-timeout"; }
     };
 
+    struct Ping6TimeoutEvent : Event
+    {
+        EndDevice *dev;
+        uint16_t seq;
+
+        Ping6TimeoutEvent(EndDevice *d, uint16_t s) : dev(d), seq(s) {}
+
+        void Execute(Engine &) override { dev->OnPing6Timeout(seq); }
+        const char *Name() const override { return "ping6-timeout"; }
+    };
+
     struct TraceNextEvent : Event
     {
         EndDevice *dev;
@@ -35,6 +69,15 @@ namespace
 
         void Execute(Engine &) override { dev->AdvanceTrace(); }
         const char *Name() const override { return "trace-next"; }
+    };
+
+    struct Trace6NextEvent : Event
+    {
+        EndDevice *dev;
+        explicit Trace6NextEvent(EndDevice *d) : dev(d) {}
+
+        void Execute(Engine &) override { dev->AdvanceTrace6(); }
+        const char *Name() const override { return "trace6-next"; }
     };
 
     struct DhcpTimerEvent : Event
@@ -145,7 +188,8 @@ void EndDevice::OnFrame(Port *port, FramePtr frame)
     if (!port)
         return;
 
-    if ((port->mac != frame->dst) && !frame->IsBroadcast())
+    if ((port->mac != frame->dst) && !frame->IsBroadcast() &&
+        !(frame->type == EthernetFrame::kIPv6 && frame->dst.IsGroup()))
         return;
 
     if (frame->type == EthernetFrame::kARP)
@@ -156,6 +200,326 @@ void EndDevice::OnFrame(Port *port, FramePtr frame)
     else if (frame->type == EthernetFrame::kIPv4)
     {
         HandleIp(port, frame);
+    }
+    else if (frame->type == EthernetFrame::kIPv6)
+    {
+        HandleIpv6(port, frame);
+    }
+}
+
+void EndDevice::SetIpv6(Port *port, const Ipv6 &addr)
+{
+    if(!port)
+        return;
+    port->hasIp6 = true;
+    port->ip6 = addr;
+}
+
+void EndDevice::SendIpv6(Port *egress, const Ipv6 &dstIp, const Mac &dstMac,
+                         const Icmpv6Message &msg, uint8_t hopLimit)
+{
+    if(!egress || !egress->hasIp6)
+        return;
+
+    Ipv6Packet pkt(egress->ip6, dstIp, Icmpv6Message::kNextHeader,
+                   msg.ToBytes(egress->ip6, dstIp));
+    pkt.hopLimit = hopLimit;
+    if(msg.type == Icmpv6Message::kNeighborSolicit ||
+       msg.type == Icmpv6Message::kNeighborAdvert)
+        pkt.hopLimit = 255;
+
+    egress->Send(std::make_shared<const EthernetFrame>(
+        dstMac, egress->mac, EthernetFrame::kIPv6, pkt.ToBytes()));
+}
+
+bool EndDevice::ResolveNextHop6(const Ipv6 &target, Port *&egress,
+                                Ipv6 &nextHop)
+{
+    for(Port *p : portList)
+        if(p->hasIp6 && Ipv6Subnet(p->ip6, p->prefix6).Contains(target))
+        {
+            egress = p;
+            nextHop = target;
+            return true;
+        }
+
+    if(hasGateway6)
+        for(Port *p : portList)
+            if(p->hasIp6 &&
+               Ipv6Subnet(p->ip6, p->prefix6).Contains(gateway6))
+            {
+                egress = p;
+                nextHop = gateway6;
+                return true;
+            }
+
+    for(Port *p : portList)
+        if(p->hasIp6)
+        {
+            egress = p;
+            nextHop = target;
+            return true;
+        }
+    return false;
+}
+
+void EndDevice::SendEcho6(Port *egress, const Ipv6 &targetIp,
+                          const Ipv6 &nextHop, uint16_t seq, uint8_t hopLimit)
+{
+    auto it = ndCache.find(nextHop);
+    if(it == ndCache.end() || !egress)
+        return;
+
+    auto oit = outstanding6.find(seq);
+    if(oit != outstanding6.end())
+    {
+        oit->second.sentAt = clock ? clock->Now() : 0;
+        oit->second.sent = true;
+    }
+
+    Icmpv6Message req;
+    req.type = Icmpv6Message::kEchoRequest;
+    req.id = 0x1234;
+    req.seq = seq;
+    SendIpv6(egress, targetIp, it->second, req, hopLimit);
+}
+
+void EndDevice::Ping6(const Ipv6 &targetIp)
+{
+    Port *egress = nullptr;
+    Ipv6 nextHop;
+    if(!ResolveNextHop6(targetIp, egress, nextHop))
+    {
+        std::cout << "ping6: no IPv6 address\n";
+        return;
+    }
+
+    uint16_t seq = ++nextPingSeq;
+    outstanding6[seq] = Ping6Outstanding{ targetIp, 0, false };
+    if(scheduler)
+        scheduler->ScheduleAfter(kPingTimeout,
+            std::make_unique<Ping6TimeoutEvent>(this, seq));
+
+    auto it = ndCache.find(nextHop);
+    if(it != ndCache.end())
+    {
+        SendEcho6(egress, targetIp, nextHop, seq);
+        return;
+    }
+
+    pendingPing6[nextHop].push_back(
+        PendingPing6{ targetIp, nextHop, egress, seq, 64 });
+    Icmpv6Message ns;
+    ns.type = Icmpv6Message::kNeighborSolicit;
+    ns.target = nextHop;
+    ns.options = NdpLinkLayerOption(1, egress->mac);
+    SendIpv6(egress, SolicitedNode(nextHop), SolicitedMac(nextHop), ns);
+}
+
+void EndDevice::Traceroute6(const Ipv6 &targetIp, uint8_t maxHops)
+{
+    traceHops6.clear();
+    traceTarget6 = targetIp;
+    traceMaxHops6 = maxHops;
+    traceTtl6 = 1;
+    traceActive6 = true;
+
+    std::cout << "traceroute6 to " << targetIp.ToString()
+              << " (" << int(maxHops) << " hops max)\n";
+    SendTrace6Probe();
+}
+
+void EndDevice::SendTrace6Probe()
+{
+    if(!traceActive6)
+        return;
+    if(traceTtl6 > traceMaxHops6)
+    {
+        traceActive6 = false;
+        return;
+    }
+
+    Port *egress = nullptr;
+    Ipv6 nextHop;
+    if(!ResolveNextHop6(traceTarget6, egress, nextHop))
+    {
+        std::cout << "traceroute6: no IPv6 address\n";
+        traceActive6 = false;
+        return;
+    }
+
+    uint16_t seq = ++nextPingSeq;
+    traceHops6[seq] = traceTtl6;
+    outstanding6[seq] = Ping6Outstanding{ traceTarget6, 0, false };
+    if(scheduler)
+        scheduler->ScheduleAfter(kPingTimeout,
+            std::make_unique<Ping6TimeoutEvent>(this, seq));
+
+    auto it = ndCache.find(nextHop);
+    if(it != ndCache.end())
+    {
+        SendEcho6(egress, traceTarget6, nextHop, seq, traceTtl6);
+        return;
+    }
+
+    pendingPing6[nextHop].push_back(
+        PendingPing6{ traceTarget6, nextHop, egress, seq, traceTtl6 });
+    Icmpv6Message ns;
+    ns.type = Icmpv6Message::kNeighborSolicit;
+    ns.target = nextHop;
+    ns.options = NdpLinkLayerOption(1, egress->mac);
+    SendIpv6(egress, SolicitedNode(nextHop), SolicitedMac(nextHop), ns);
+}
+
+void EndDevice::ScheduleNextTrace6()
+{
+    if(!traceActive6)
+        return;
+    if(traceTtl6 >= traceMaxHops6)
+    {
+        traceActive6 = false;
+        return;
+    }
+
+    if(scheduler)
+        scheduler->ScheduleAfter(1, std::make_unique<Trace6NextEvent>(this));
+    else
+        AdvanceTrace6();
+}
+
+void EndDevice::AdvanceTrace6()
+{
+    if(!traceActive6)
+        return;
+    ++traceTtl6;
+    SendTrace6Probe();
+}
+
+void EndDevice::HandleIpv6(Port *port, FramePtr frame)
+{
+    if(!port || !port->hasIp6)
+        return;
+
+    Ipv6Packet pkt;
+    if(!Ipv6Packet::TryFromBytes(frame->payload, pkt))
+        return;
+    if(!(pkt.dstIp == port->ip6) && pkt.dstIp.bytes[0] != 0xFF)
+        return;
+    if(pkt.nextHeader != Icmpv6Message::kNextHeader)
+        return;
+
+    Icmpv6Message msg;
+    if(!Icmpv6Message::TryFromBytes(pkt.payload, pkt.srcIp, pkt.dstIp, msg))
+        return;
+
+    if(msg.type == Icmpv6Message::kNeighborSolicit)
+    {
+        if(!(msg.target == port->ip6))
+            return;
+        Icmpv6Message na;
+        na.type = Icmpv6Message::kNeighborAdvert;
+        na.ndFlags = 0x60000000u;
+        na.target = port->ip6;
+        na.options = NdpLinkLayerOption(2, port->mac);
+        SendIpv6(port, pkt.srcIp, frame->src, na);
+        return;
+    }
+
+    if(msg.type == Icmpv6Message::kNeighborAdvert)
+    {
+        ndCache[msg.target] = frame->src;
+        auto it = pendingPing6.find(msg.target);
+        if(it != pendingPing6.end())
+        {
+            std::vector<PendingPing6> pending = std::move(it->second);
+            pendingPing6.erase(it);
+            for(const PendingPing6 &p : pending)
+                SendEcho6(p.egress, p.target, p.nextHop, p.seq, p.hopLimit);
+        }
+        return;
+    }
+
+    if(msg.type == Icmpv6Message::kEchoRequest)
+    {
+        Icmpv6Message rep = msg;
+        rep.type = Icmpv6Message::kEchoReply;
+        SendIpv6(port, pkt.srcIp, frame->src, rep);
+        return;
+    }
+
+    if(msg.type == Icmpv6Message::kEchoReply)
+    {
+        auto th = traceHops6.find(msg.seq);
+        if(th != traceHops6.end())
+        {
+            std::cout << "hop " << int(th->second) << ": "
+                      << pkt.srcIp.ToString() << " (target)\n";
+            traceHops6.erase(th);
+            outstanding6.erase(msg.seq);
+            traceActive6 = false;
+            return;
+        }
+
+        auto oit = outstanding6.find(msg.seq);
+        if(oit != outstanding6.end())
+        {
+            std::cout << "ping6 reply from " << pkt.srcIp.ToString()
+                      << " seq=" << msg.seq << "\n";
+            outstanding6.erase(oit);
+        }
+        return;
+    }
+
+    if(msg.type == Icmpv6Message::kDestUnreachable ||
+       msg.type == Icmpv6Message::kTimeExceeded)
+    {
+        Ipv6Packet orig;
+        Icmpv6Message oc;
+        uint16_t oseq = 0;
+        bool haveSeq = false;
+        if(Ipv6Packet::TryFromBytes(msg.payload, orig) &&
+           orig.nextHeader == Icmpv6Message::kNextHeader &&
+           Icmpv6Message::TryFromBytes(orig.payload, orig.srcIp, orig.dstIp, oc) &&
+           oc.type == Icmpv6Message::kEchoRequest)
+        {
+            oseq = oc.seq;
+            haveSeq = true;
+            outstanding6.erase(oseq);
+            for(auto pit = pendingPing6.begin(); pit != pendingPing6.end();)
+            {
+                std::vector<PendingPing6> &v = pit->second;
+                v.erase(std::remove_if(v.begin(), v.end(),
+                        [&](const PendingPing6 &p) { return p.seq == oseq; }),
+                        v.end());
+                if(v.empty()) pit = pendingPing6.erase(pit);
+                else ++pit;
+            }
+        }
+
+        auto th = haveSeq ? traceHops6.find(oseq) : traceHops6.end();
+        if(th != traceHops6.end())
+        {
+            uint8_t ttl = th->second;
+            traceHops6.erase(th);
+            if(msg.type == Icmpv6Message::kTimeExceeded)
+            {
+                std::cout << "hop " << int(ttl) << ": "
+                          << pkt.srcIp.ToString() << "\n";
+                ScheduleNextTrace6();
+            }
+            else
+            {
+                std::cout << "hop " << int(ttl) << ": unreachable ("
+                          << pkt.srcIp.ToString() << ")\n";
+                traceActive6 = false;
+            }
+            return;
+        }
+
+        std::cout << (msg.type == Icmpv6Message::kTimeExceeded
+                          ? "icmp6 time exceeded from "
+                          : "icmp6 unreachable from ")
+                  << pkt.srcIp.ToString() << "\n";
     }
 }
 
@@ -305,6 +669,32 @@ void EndDevice::HandleIp(Port *port, FramePtr frame)
             return;
         }
 
+        if (icmp.type == IcmpMessage::kDestUnreachable &&
+            icmp.code == IcmpMessage::kFragNeeded)
+        {
+            if(icmp.payload.size() >= 24 && icmp.payload[9] == IpPacket::kTcp)
+            {
+                uint16_t localPort =
+                    uint16_t((icmp.payload[20] << 8) | icmp.payload[21]);
+                uint16_t remotePort =
+                    uint16_t((icmp.payload[22] << 8) | icmp.payload[23]);
+                Ipv4 remote(
+                    (uint32_t(icmp.payload[16]) << 24) |
+                    (uint32_t(icmp.payload[17]) << 16) |
+                    (uint32_t(icmp.payload[18]) << 8) |
+                    uint32_t(icmp.payload[19]));
+                TcpConnection *conn =
+                    FindTcpConn(localPort, remote, remotePort);
+                if(conn)
+                    conn->OnPathMtu(icmp.nextHopMtu);
+            }
+            std::cout << "icmp frag needed from " << pkt.srcIp.ToString()
+                      << " mtu=" << icmp.nextHopMtu << "\n";
+            if (haveSeq)
+                outstanding.erase(oseq);
+            return;
+        }
+
         std::cout << (icmp.type == IcmpMessage::kTimeExceeded
                           ? "icmp time exceeded from "
                           : "icmp unreachable from ")
@@ -405,12 +795,13 @@ void EndDevice::SendEcho(Ipv4 targetIp, uint16_t seq, uint8_t ttl)
     }
     else
     {
-        bool alreadyPending = false;
-        for (const PendingPing &pp : pendingPings)
-            if (pp.nextHop == nextHop) { alreadyPending = true; break; }
-
+        bool alreadyPending =
+            pendingArpCounts.find(nextHop.value) != pendingArpCounts.end();
         if (pendingPings.size() < kMaxPending)
+        {
             pendingPings.push_back(PendingPing{ egress, nextHop, pkt, seq });
+            NotePendingArp(nextHop);
+        }
         else
             ++droppedPending;
 
@@ -448,13 +839,111 @@ void EndDevice::SetTcpKeepalive(bool on, uint64_t idle, uint64_t interval,
         c.SetKeepalive(on, idle, interval, count);
 }
 
+TcpConnection &EndDevice::NewTcpConnection()
+{
+    tcpConns.emplace_back();
+    TcpConnection &c = tcpConns.back();
+    TcpConnection *cp = &c;
+    c.SetScheduler(scheduler);
+    c.congestion = tcpCongestion;
+    c.tlpEnabled = tcpTlp;
+    c.prrEnabled = tcpPrr;
+    c.rackEnabled = tcpRack;
+    c.pacingEnabled = tcpPacing;
+    c.out = [this, cp](const TcpSegment &s) { SendTcpSegment(*cp, s); };
+    c.queryPathMtu = [this, cp]() -> uint16_t {
+        Port *egress = nullptr;
+        Ipv4 nextHop;
+        if(!ResolveNextHop(cp->remoteIp, egress, nextHop) ||
+           !egress || !egress->link)
+            return 0;
+        return egress->link->mtu;
+    };
+    c.onKeepaliveTimeout = []() { std::cout << "tcp: keepalive timeout\n"; };
+    c.SetKeepalive(tcpKeepalive, tcpKeepIdle, tcpKeepInterval, tcpKeepCount);
+    return c;
+}
+
+uint16_t EndDevice::AllocateTcpLocalPort()
+{
+    if(tcpPortMin == 0 || tcpPortMax < tcpPortMin)
+        return 0;
+    uint32_t span = uint32_t(tcpPortMax - tcpPortMin) + 1;
+    uint32_t start = uint32_t(tcpPortCursor - tcpPortMin);
+    if(start >= span)
+        start = 0;
+
+    for(uint32_t i = 0; i < span; ++i)
+    {
+        uint32_t offset = (start + i) % span;
+        uint16_t port = uint16_t(tcpPortMin + offset);
+        bool used = false;
+        for(const TcpConnection &c : tcpConns)
+            if(c.localPort == port)
+            {
+                used = true;
+                break;
+            }
+        if(!used)
+        {
+            tcpPortCursor = uint16_t(tcpPortMin +
+                ((offset + 1) % span));
+            return port;
+        }
+    }
+    return 0;
+}
+
+uint16_t EndDevice::TcpMssLimit(Port *port) const
+{
+    uint32_t limit = 1460;
+    if(port && port->link && port->link->mtu > 40)
+    {
+        limit = uint32_t(port->link->mtu) - 40;
+        if(limit < 536)
+            limit = 536;
+        if(limit > 1460)
+            limit = 1460;
+    }
+    return uint16_t(limit);
+}
+
+void EndDevice::IndexTcpConn(TcpConnection &c)
+{
+    tcpConnIndex[std::make_tuple(c.localPort, c.remoteIp.value,
+                                 c.remotePort)] = &c;
+}
+
 TcpConnection *EndDevice::FindTcpConn(uint16_t localPort, Ipv4 remote, uint16_t remotePort)
 {
+    if(tcpLastConn && tcpLastConn->state != TcpConnection::Closed &&
+       tcpLastConn->localPort == localPort &&
+       tcpLastConn->remoteIp == remote &&
+       tcpLastConn->remotePort == remotePort)
+        return tcpLastConn;
+
+    TcpConnKey key = std::make_tuple(localPort, remote.value, remotePort);
+    auto indexed = tcpConnIndex.find(key);
+    if(indexed != tcpConnIndex.end())
+    {
+        TcpConnection *c = indexed->second;
+        if(c && c->state != TcpConnection::Closed)
+        {
+            tcpLastConn = c;
+            return c;
+        }
+        tcpConnIndex.erase(indexed);
+    }
+
     for(TcpConnection &c : tcpConns)
     {
         if(c.state != TcpConnection::Closed &&
            c.localPort == localPort && c.remoteIp == remote && c.remotePort == remotePort)
+        {
+            tcpConnIndex[key] = &c;
+            tcpLastConn = &c;
             return &c;
+        }
     }
     return nullptr;
 }
@@ -464,7 +953,15 @@ void EndDevice::CleanupTcpConns()
     for(auto it = tcpConns.begin(); it != tcpConns.end(); )
     {
         if(it->state == TcpConnection::Closed)
+        {
+            TcpConnKey key = std::make_tuple(it->localPort, it->remoteIp.value,
+                                             it->remotePort);
+            auto indexed = tcpConnIndex.find(key);
+            if(indexed != tcpConnIndex.end() && indexed->second == &*it)
+                tcpConnIndex.erase(indexed);
+            tcpLastConn = nullptr;
             it = tcpConns.erase(it);
+        }
         else
             ++it;
     }
@@ -580,17 +1077,15 @@ bool EndDevice::AcceptTcpCookie(Port *ingress, const IpPacket &pkt,
     if(tcpConns.size() >= kMaxTcpConns)
         return false;
 
-    tcpConns.emplace_back();
-    TcpConnection &c = tcpConns.back();
+    TcpConnection &c = NewTcpConnection();
     TcpConnection *cp = &c;
-    c.SetScheduler(scheduler);
-    c.out = [this, cp](const TcpSegment &s) { SendTcpSegment(*cp, s); };
+    c.mssLimit = TcpMssLimit(ingress);
+    c.mss = c.mssLimit;
     c.onData = [cp](const std::vector<uint8_t> &data) { cp->SendData(data); };
-    c.onKeepaliveTimeout = []() { std::cout << "tcp: keepalive timeout\n"; };
-    c.SetKeepalive(tcpKeepalive, tcpKeepIdle, tcpKeepInterval, tcpKeepCount);
     c.OpenPassiveCookie(ingress->ip, tcpListenPort, pkt.srcIp,
                         seg.srcPort, clientIsn, iss);
-    c.OnSegment(seg, pkt.srcIp);
+    c.OnSegment(seg, pkt.srcIp, pkt.ecn);
+    IndexTcpConn(c);
 
     ++tcpAccepted;
     ++tcpCookiesAccepted;
@@ -606,6 +1101,8 @@ void EndDevice::SendTcpSegment(TcpConnection &conn, const TcpSegment &seg)
 
     std::vector<uint8_t> bytes = seg.ToBytes(conn.localIp, conn.remoteIp);
     IpPacket pkt(conn.localIp, conn.remoteIp, IpPacket::kTcp, bytes);
+    pkt.ecn = seg.ecn;
+    pkt.dontFragment = true;
 
     Mac dstMac;
     if(arp.Lookup(nextHop, dstMac))
@@ -615,12 +1112,13 @@ void EndDevice::SendTcpSegment(TcpConnection &conn, const TcpSegment &seg)
         return;
     }
 
-    bool alreadyPending = false;
-    for(const PendingPing &pp : pendingPings)
-        if(pp.nextHop == nextHop) { alreadyPending = true; break; }
-
+    bool alreadyPending =
+        pendingArpCounts.find(nextHop.value) != pendingArpCounts.end();
     if(pendingPings.size() < kMaxPending)
+    {
         pendingPings.push_back(PendingPing{ egress, nextHop, pkt, 0 });
+        NotePendingArp(nextHop);
+    }
     else
         ++droppedPending;
 
@@ -631,8 +1129,6 @@ void EndDevice::SendTcpSegment(TcpConnection &conn, const TcpSegment &seg)
 bool EndDevice::HandleTcpStack(Port *port, const IpPacket &pkt, const Mac &srcMac)
 {
     if(!port) return false;
-
-    CleanupTcpConns();
 
     TcpSegment raw;
     if(!TcpSegment::TryFromBytes(pkt.payload, raw))
@@ -646,11 +1142,16 @@ bool EndDevice::HandleTcpStack(Port *port, const IpPacket &pkt, const Mac &srcMa
 
     bool cookieAck = !conn && tcpEchoListen &&
                      (raw.flags & TcpSegment::kAck) && !(raw.flags & TcpSegment::kSyn);
-    if(cookieAck && AcceptTcpCookie(port, pkt, raw, srcMac))
-        return true;
+    if(cookieAck)
+    {
+        CleanupTcpConns();
+        if(AcceptTcpCookie(port, pkt, raw, srcMac))
+            return true;
+    }
 
     if(!conn && (tcpEchoListen || dnsListen) && synOnly)
     {
+        CleanupTcpConns();
         if(tcpConns.size() >= kMaxTcpConns)
         {
             ++tcpDropped;
@@ -688,7 +1189,7 @@ bool EndDevice::HandleTcpStack(Port *port, const IpPacket &pkt, const Mac &srcMa
 
     if(conn)
     {
-        conn->OnSegment(seg, pkt.srcIp);
+        conn->OnSegment(seg, pkt.srcIp, pkt.ecn);
         return true;
     }
 
@@ -699,11 +1200,10 @@ bool EndDevice::HandleTcpStack(Port *port, const IpPacket &pkt, const Mac &srcMa
         return true;
     }
 
-    tcpConns.emplace_back();
-    TcpConnection &c = tcpConns.back();
+    TcpConnection &c = NewTcpConnection();
     TcpConnection *cp = &c;
-    c.SetScheduler(scheduler);
-    c.out = [this, cp](const TcpSegment &s) { SendTcpSegment(*cp, s); };
+    c.mssLimit = TcpMssLimit(port);
+    c.mss = c.mssLimit;
     if(dnsListen)
     {
         c.onData = [this, cp](const std::vector<uint8_t> &data) {
@@ -714,10 +1214,9 @@ bool EndDevice::HandleTcpStack(Port *port, const IpPacket &pkt, const Mac &srcMa
     {
         c.onData = [cp](const std::vector<uint8_t> &data) { cp->SendData(data); };
     }
-    c.onKeepaliveTimeout = []() { std::cout << "tcp: keepalive timeout\n"; };
-    c.SetKeepalive(tcpKeepalive, tcpKeepIdle, tcpKeepInterval, tcpKeepCount);
     c.Listen(port->ip, dnsListen ? 53 : tcpListenPort);
-    c.OnSegment(seg, pkt.srcIp);
+    c.OnSegment(seg, pkt.srcIp, pkt.ecn);
+    IndexTcpConn(c);
     ++tcpAccepted;
     return true;
 }
@@ -740,14 +1239,19 @@ void EndDevice::TcpConnect(Ipv4 targetIp, uint16_t dstPort, const std::string &t
         return;
     }
 
-    tcpConns.emplace_back();
-    TcpConnection &c = tcpConns.back();
+    uint16_t localPort = AllocateTcpLocalPort();
+    if(localPort == 0)
+    {
+        ++tcpDropped;
+        std::cout << "tcp: no local port\n";
+        return;
+    }
+
+    TcpConnection &c = NewTcpConnection();
     TcpConnection *cp = &c;
-    c.SetScheduler(scheduler);
-    c.out = [this, cp](const TcpSegment &s) { SendTcpSegment(*cp, s); };
+    c.mssLimit = TcpMssLimit(egress);
+    c.mss = c.mssLimit;
     c.onReset = []() { std::cout << "tcp: connection reset\n"; };
-    c.onKeepaliveTimeout = []() { std::cout << "tcp: keepalive timeout\n"; };
-    c.SetKeepalive(tcpKeepalive, tcpKeepIdle, tcpKeepInterval, tcpKeepCount);
     c.onData = [targetIp, dstPort](const std::vector<uint8_t> &data) {
         std::string txt(data.begin(), data.end());
         std::cout << "tcp reply from " << targetIp.ToString() << ":" << dstPort
@@ -758,11 +1262,25 @@ void EndDevice::TcpConnect(Ipv4 targetIp, uint16_t dstPort, const std::string &t
         cp->SendData(d);
     };
 
-    uint16_t localPort = nextTcpLocalPort++;
     c.OpenActive(egress->ip, localPort, targetIp, dstPort, 0);
+    IndexTcpConn(c);
     ++tcpAccepted;
     std::cout << "tcp: connecting to " << targetIp.ToString()
               << ":" << dstPort << "\n";
+}
+
+void EndDevice::TcpSend(const std::string &text)
+{
+    for(TcpConnection &c : tcpConns)
+    {
+        if(c.state == TcpConnection::Established)
+        {
+            c.SendData(std::vector<uint8_t>(text.begin(), text.end()));
+            std::cout << "tcp: sent " << text.size() << " bytes\n";
+            return;
+        }
+    }
+    std::cout << "tcp: no established connection\n";
 }
 
 void EndDevice::SetDhcpServer(bool on, const Ipv4 &start, const Ipv4 &end,
@@ -2296,11 +2814,8 @@ void EndDevice::StartDnsIxfr(const Ipv4 &server, const std::string &zone,
     ixfrId = uint16_t(nextDnsId++);
     ixfrRequestMac.clear();
 
-    tcpConns.emplace_back();
-    TcpConnection &c = tcpConns.back();
+    TcpConnection &c = NewTcpConnection();
     TcpConnection *cp = &c;
-    c.SetScheduler(scheduler);
-    c.out = [this, cp](const TcpSegment &s) { SendTcpSegment(*cp, s); };
     c.onConnected = [this, cp]() { SendDnsIxfrQuery(*cp); };
     c.onData = [this, cp](const std::vector<uint8_t> &data) {
         OnDnsIxfrData(*cp, data);
@@ -2318,6 +2833,7 @@ void EndDevice::StartDnsIxfr(const Ipv4 &server, const std::string &zone,
     ixfrActive = true;
     std::cout << "dns: ixfr " << ixfrZone << " from " << serial << "\n";
     c.OpenActive(egress->ip, nextIxfrLocalPort++, server, 53);
+    IndexTcpConn(c);
 }
 
 void EndDevice::SendDnsIxfrQuery(TcpConnection &conn)
@@ -2519,11 +3035,8 @@ void EndDevice::StartDnsAxfr(const Ipv4 &server, const std::string &zone,
     axfrRequestMac.clear();
     axfrRecords.clear();
 
-    tcpConns.emplace_back();
-    TcpConnection &c = tcpConns.back();
+    TcpConnection &c = NewTcpConnection();
     TcpConnection *cp = &c;
-    c.SetScheduler(scheduler);
-    c.out = [this, cp](const TcpSegment &s) { SendTcpSegment(*cp, s); };
     c.onConnected = [this, cp]() { SendDnsAxfrQuery(*cp); };
     c.onData = [this, cp](const std::vector<uint8_t> &data) {
         OnDnsAxfrData(*cp, data);
@@ -2549,6 +3062,7 @@ void EndDevice::StartDnsAxfr(const Ipv4 &server, const std::string &zone,
     if(!internal)
         std::cout << "dns: axfr " << axfrZone << " begin\n";
     c.OpenActive(egress->ip, nextAxfrLocalPort++, server, 53);
+    IndexTcpConn(c);
 }
 
 void EndDevice::SendDnsAxfrQuery(TcpConnection &conn)
@@ -3977,11 +4491,8 @@ void EndDevice::StartDnsTcpQuery()
         return;
     }
 
-    tcpConns.emplace_back();
-    TcpConnection &c = tcpConns.back();
+    TcpConnection &c = NewTcpConnection();
     TcpConnection *cp = &c;
-    c.SetScheduler(scheduler);
-    c.out = [this, cp](const TcpSegment &s) { SendTcpSegment(*cp, s); };
     c.onConnected = [this, cp]() { SendDnsTcpQuery(*cp); };
     c.onData = [this, cp](const std::vector<uint8_t> &data) {
         OnDnsTcpData(*cp, data);
@@ -3997,6 +4508,7 @@ void EndDevice::StartDnsTcpQuery()
     dnsTcpConn = cp;
     dnsTcpActive = true;
     c.OpenActive(egress->ip, nextDnsTcpLocalPort++, dnsQueryServer, 53);
+    IndexTcpConn(c);
     if(dnsTcpActive)
         ScheduleDnsRetry(std::max<uint64_t>(dnsTimeout * 5, 500));
 }
@@ -4487,12 +4999,13 @@ void EndDevice::SendTcpTo(Ipv4 peer, uint16_t sport, uint16_t dport,
         return;
     }
 
-    bool alreadyPending = false;
-    for (const PendingPing &pp : pendingPings)
-        if (pp.nextHop == nextHop) { alreadyPending = true; break; }
-
+    bool alreadyPending =
+        pendingArpCounts.find(nextHop.value) != pendingArpCounts.end();
     if (pendingPings.size() < kMaxPending)
+    {
         pendingPings.push_back(PendingPing{ egress, nextHop, pkt, 0 });
+        NotePendingArp(nextHop);
+    }
     else
         ++droppedPending;
 
@@ -4629,7 +5142,7 @@ void EndDevice::HandleTcp(Port *, const IpPacket &pkt, uint64_t)
 }
 
 void EndDevice::SendUdp(Ipv4 targetIp, uint16_t dstPort, const std::string &payload,
-                        uint16_t srcPort)
+                        uint16_t srcPort, bool dontFragment)
 {
     Port *egress = nullptr;
     Ipv4 nextHop;
@@ -4668,6 +5181,7 @@ void EndDevice::SendUdp(Ipv4 targetIp, uint16_t dstPort, const std::string &payl
     d.payload.assign(payload.begin(), payload.end());
 
     IpPacket pkt(egress->ip, targetIp, IpPacket::kUdp, d.ToBytes());
+    pkt.dontFragment = dontFragment;
 
     Mac dstMac;
     if (arp.Lookup(nextHop, dstMac))
@@ -4677,12 +5191,13 @@ void EndDevice::SendUdp(Ipv4 targetIp, uint16_t dstPort, const std::string &payl
     }
     else
     {
-        bool alreadyPending = false;
-        for (const PendingPing &pp : pendingPings)
-            if (pp.nextHop == nextHop) { alreadyPending = true; break; }
-
+        bool alreadyPending =
+            pendingArpCounts.find(nextHop.value) != pendingArpCounts.end();
         if (pendingPings.size() < kMaxPending)
+        {
             pendingPings.push_back(PendingPing{ egress, nextHop, pkt, 0 });
+            NotePendingArp(nextHop);
+        }
         else
             ++droppedPending;
 
@@ -4760,12 +5275,53 @@ void EndDevice::FlushPending()
             }
             it->egress->Send(std::make_shared<const EthernetFrame>(
                 mac, it->egress->mac, EthernetFrame::kIPv4, it->pkt.ToBytes()));
+            DropPendingArp(it->nextHop);
             it = pendingPings.erase(it);
         }
         else
         {
             ++it;
         }
+    }
+}
+
+void EndDevice::OnPing6Timeout(uint16_t seq)
+{
+    auto it = outstanding6.find(seq);
+    if(it == outstanding6.end())
+        return;
+
+    auto th = traceHops6.find(seq);
+    if(th != traceHops6.end())
+    {
+        std::cout << "hop " << int(th->second) << ": *\n";
+        traceHops6.erase(th);
+        outstanding6.erase(it);
+        for(auto pit = pendingPing6.begin(); pit != pendingPing6.end();)
+        {
+            std::vector<PendingPing6> &v = pit->second;
+            v.erase(std::remove_if(v.begin(), v.end(),
+                    [seq](const PendingPing6 &p) { return p.seq == seq; }),
+                    v.end());
+            if(v.empty()) pit = pendingPing6.erase(pit);
+            else ++pit;
+        }
+        ScheduleNextTrace6();
+        return;
+    }
+
+    std::cout << "ping6 timeout from " << it->second.target.ToString()
+              << " seq=" << seq << "\n";
+    outstanding6.erase(it);
+
+    for(auto pit = pendingPing6.begin(); pit != pendingPing6.end();)
+    {
+        std::vector<PendingPing6> &v = pit->second;
+        v.erase(std::remove_if(v.begin(), v.end(),
+                [seq](const PendingPing6 &p) { return p.seq == seq; }),
+                v.end());
+        if(v.empty()) pit = pendingPing6.erase(pit);
+        else ++pit;
     }
 }
 
@@ -4783,7 +5339,11 @@ void EndDevice::OnPingTimeout(uint16_t seq)
         outstanding.erase(it);
         for (auto p = pendingPings.begin(); p != pendingPings.end(); )
         {
-            if (p->seq == seq) p = pendingPings.erase(p);
+            if (p->seq == seq)
+            {
+                DropPendingArp(p->nextHop);
+                p = pendingPings.erase(p);
+            }
             else ++p;
         }
         ScheduleNextTrace();
@@ -4797,7 +5357,10 @@ void EndDevice::OnPingTimeout(uint16_t seq)
     for (auto p = pendingPings.begin(); p != pendingPings.end(); )
     {
         if (p->seq == seq)
+        {
+            DropPendingArp(p->nextHop);
             p = pendingPings.erase(p);
+        }
         else
             ++p;
     }

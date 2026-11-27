@@ -3,6 +3,8 @@
 #include "../engine/Event.hpp"
 #include <memory>
 #include <utility>
+#include <cmath>
+#include <algorithm>
 
 namespace
 {
@@ -40,6 +42,24 @@ namespace
         DelayedAckEvent(TcpConnection *c, uint64_t g) : conn(c), gen(g) {}
         void Execute(Engine &) override { conn->OnDelayedAckEvent(gen); }
         const char *Name() const override { return "tcp-delayed-ack"; }
+    };
+
+    struct TlpEvent : Event
+    {
+        TcpConnection *conn;
+        uint64_t gen;
+        TlpEvent(TcpConnection *c, uint64_t g) : conn(c), gen(g) {}
+        void Execute(Engine &) override { conn->OnTlpEvent(gen); }
+        const char *Name() const override { return "tcp-tlp"; }
+    };
+
+    struct PacingEvent : Event
+    {
+        TcpConnection *conn;
+        uint64_t gen;
+        PacingEvent(TcpConnection *c, uint64_t g) : conn(c), gen(g) {}
+        void Execute(Engine &) override { conn->OnPacingEvent(gen); }
+        const char *Name() const override { return "tcp-pacing"; }
     };
 
     std::vector<uint8_t> BuildSynOptions(uint16_t mss, uint8_t wscale,
@@ -269,6 +289,177 @@ void TcpConnection::UpdateRtt(double sample)
     rto = uint64_t(est);
 }
 
+void TcpConnection::OnCongestionLoss(uint64_t now)
+{
+    if(congestion == Cubic)
+    {
+        double wmaxSeg = double(cwnd) / double(mss);
+        double targetSeg = wmaxSeg * 0.7;
+        uint32_t target = uint32_t(targetSeg * double(mss));
+        if(target < 2 * mss)
+            target = 2 * mss;
+        ssthresh = target;
+        cubicWMax = wmaxSeg;
+        double delta = (wmaxSeg - targetSeg) / 0.4;
+        if(delta < 0.0)
+            delta = 0.0;
+        cubicK = std::cbrt(delta);
+        cubicEpoch = now;
+        return;
+    }
+    ssthresh = cwnd / 2;
+    if(ssthresh < 2 * mss)
+        ssthresh = 2 * mss;
+}
+
+void TcpConnection::GrowCongestion(uint32_t acked, uint64_t now)
+{
+    if(cwnd < ssthresh)
+    {
+        cwnd += acked;
+    }
+    else if(congestion == Cubic)
+    {
+        GrowCubic(acked, now);
+    }
+    else
+    {
+        cwnd += (cwnd > 0) ? (mss * mss) / cwnd : mss;
+    }
+    if(cwnd > 65535)
+        cwnd = 65535;
+}
+
+void TcpConnection::GrowCubic(uint32_t acked, uint64_t now)
+{
+    double rtt = (rttValid && srtt > 1.0) ? srtt : 100.0;
+    double t = double(now - cubicEpoch) / rtt;
+    double dt = t - cubicK;
+    double targetSeg = 0.4 * dt * dt * dt + cubicWMax;
+    double target = targetSeg * double(mss);
+    if(target > double(cwnd))
+    {
+        double inc = (target - double(cwnd)) * double(acked) /
+                     std::max(double(cwnd), 1.0);
+        if(inc < 1.0)
+            inc = 1.0;
+        cwnd += uint32_t(inc);
+    }
+    else
+    {
+        cwnd += (cwnd > 0) ? (mss * mss) / cwnd : mss;
+    }
+}
+
+void TcpConnection::PrrOnAck(uint32_t acked)
+{
+    if(!prrEnabled || !inRecovery)
+        return;
+    prrDelivered += acked;
+    prrAcked += acked;
+    uint64_t base = prrCwndBefore ? prrCwndBefore : 1;
+    uint64_t target = (prrDelivered * prrSsthresh) / base;
+    if(target < 1)
+        target = 1;
+    if(target > prrSsthresh)
+        target = prrSsthresh;
+    uint64_t sndcnt = target > prrOut ? target - prrOut : 0;
+    if(sndcnt < acked)
+        sndcnt = acked;
+    prrCredit += sndcnt;
+}
+
+void TcpConnection::RackOnAck(
+    uint32_t ackedSeq, uint64_t ackedTime, uint64_t now,
+    const std::vector<std::pair<uint32_t, uint32_t>> &sacks)
+{
+    if(!rackEnabled || sacks.empty())
+        return;
+
+    uint32_t maxEnd = 0;
+    for(const auto &b : sacks)
+        if(b.second > maxEnd)
+            maxEnd = b.second;
+    if(maxEnd <= sndUna)
+        return;
+
+    if(ackedTime == 0 && maxEnd > 0)
+    {
+        auto at = sentAt.upper_bound(maxEnd - 1);
+        if(at != sentAt.begin())
+        {
+            --at;
+            ackedTime = at->second;
+        }
+    }
+    if(ackedTime != 0 && now >= ackedTime)
+    {
+        uint64_t sample = now - ackedTime;
+        if(rackRtt == 0 || sample < rackRtt)
+            rackRtt = sample;
+    }
+
+    uint64_t reorder = rackRtt > 0 ? rackRtt / 4 : 1;
+    if(reorder < 1)
+        reorder = 1;
+
+    for(const auto &kv : unacked)
+    {
+        if(kv.first >= maxEnd)
+            break;
+        bool covered = false;
+        for(const auto &b : sacks)
+            if(kv.first >= b.first && kv.first < b.second)
+            {
+                covered = true;
+                break;
+            }
+        if(covered || sackRetrans.count(kv.first))
+            continue;
+        auto sit = sentAt.find(kv.first);
+        if(sit == sentAt.end())
+            continue;
+        if(sit->second + reorder > now)
+            continue;
+        SendSeg(TcpSegment::kAck | TcpSegment::kPsh, kv.first, rcvNxt,
+                kv.second, false);
+        sentAt[kv.first] = now;
+        sackRetrans.insert(kv.first);
+        ++rackRetransmits;
+        ++totalRetransmits;
+        break;
+    }
+    (void)ackedSeq;
+}
+
+uint64_t TcpConnection::PacingInterval() const
+{
+    uint64_t rtt = (rttValid && srtt >= 1.0) ? uint64_t(srtt) : rto;
+    uint64_t interval = (rtt * mss) / std::max(cwnd, 1u);
+    return interval < 1 ? 1 : interval;
+}
+
+void TcpConnection::SchedulePacing()
+{
+    if(!pacingEnabled || !scheduler || pacingPending ||
+       sendOff >= sendBuf.size())
+        return;
+    pacingPending = true;
+    uint64_t gen = ++pacingGen;
+    scheduler->ScheduleAfter(PacingInterval(),
+        std::make_unique<PacingEvent>(this, gen));
+}
+
+void TcpConnection::OnPacingEvent(uint64_t gen)
+{
+    if(gen != pacingGen)
+        return;
+    pacingPending = false;
+    if(state == Closed || state == TimeWait)
+        return;
+    Pump();
+}
+
 void TcpConnection::ScheduleDelayedAck()
 {
     if(!scheduler)
@@ -353,6 +544,8 @@ void TcpConnection::RetransmitSackHole(
     sackRetrans.insert(chosen);
     ++retransmits;
     ++totalRetransmits;
+    if(rackEnabled)
+        sentAt[chosen] = TcpNow(scheduler);
     SendSeg(TcpSegment::kAck | TcpSegment::kPsh, it->first, rcvNxt,
             it->second, true);
     StartRto();
@@ -446,7 +639,8 @@ void TcpConnection::OpenActive(Ipv4 local, uint16_t lport, Ipv4 remote,
     rttValid = false;
     rttTiming = false;
     state = SynSent;
-    SendSeg(TcpSegment::kSyn, iss, 0, std::vector<uint8_t>(), true);
+    SendSeg(TcpSegment::kSyn | TcpSegment::kEce | TcpSegment::kCwr, iss, 0,
+            std::vector<uint8_t>(), true);
     StartRto();
 }
 
@@ -462,6 +656,15 @@ void TcpConnection::SendSeg(uint8_t flags, uint32_t seq, uint32_t ack,
     s.seq = seq;
     s.ack = ack;
     s.flags = flags;
+    if(ecnCeSeen)
+        s.flags |= TcpSegment::kEce;
+    if(ecnCwrPending && !payload.empty())
+    {
+        s.flags |= TcpSegment::kCwr;
+        ecnCwrPending = false;
+    }
+    if(ecnEnabled && !payload.empty())
+        s.ecn = 2;
     uint32_t win = rcvWnd;
     if((flags & TcpSegment::kSyn) || !wsEnabled)
         s.window = uint16_t(win > 65535 ? 65535 : win);
@@ -525,6 +728,42 @@ void TcpConnection::CancelRto()
     ++rtoGen;
 }
 
+void TcpConnection::ScheduleTlp()
+{
+    if(!tlpEnabled || !scheduler || state != Established ||
+       unacked.empty() || sndUna >= sndNxt)
+        return;
+    uint64_t delay = rttValid ? uint64_t(srtt + 4.0 * rttvar) : rto;
+    if(delay < 1)
+        delay = 1;
+    if(rto > 1 && delay >= rto)
+        delay = rto - 1;
+    uint64_t gen = ++tlpGen;
+    scheduler->ScheduleAfter(delay,
+        std::make_unique<TlpEvent>(this, gen));
+}
+
+void TcpConnection::CancelTlp()
+{
+    ++tlpGen;
+}
+
+void TcpConnection::OnTlpEvent(uint64_t gen)
+{
+    if(gen != tlpGen || !tlpEnabled || state != Established ||
+       unacked.empty() || sndUna >= sndNxt)
+        return;
+
+    auto it = unacked.end();
+    --it;
+    if(rackEnabled)
+        sentAt[it->first] = TcpNow(scheduler);
+    SendSeg(TcpSegment::kAck | TcpSegment::kPsh, it->first, rcvNxt,
+            it->second, false);
+    ++tlpProbes;
+    ++totalRetransmits;
+}
+
 void TcpConnection::OnRtoEvent(uint64_t gen)
 {
     if(gen != rtoGen) return;
@@ -533,6 +772,7 @@ void TcpConnection::OnRtoEvent(uint64_t gen)
 
 void TcpConnection::OnRto()
 {
+    CancelTlp();
     if(sndWnd == 0 && sendOff < sendBuf.size())
     {
         SendSeg(TcpSegment::kAck, sndUna, rcvNxt, std::vector<uint8_t>(), false);
@@ -555,11 +795,20 @@ void TcpConnection::OnRto()
 
     ssthresh = (sndNxt - sndUna) / 2;
     if(ssthresh < 2 * mss) ssthresh = 2 * mss;
+    if(congestion == Cubic)
+        OnCongestionLoss(TcpNow(scheduler));
     cwnd = mss;
+    inRecovery = false;
+    sackRetrans.clear();
+    prrCredit = 0;
+    prrDelivered = 0;
+    prrOut = 0;
 
     if(!unacked.empty())
     {
         auto it = unacked.begin();
+        if(rackEnabled)
+            sentAt[it->first] = TcpNow(scheduler);
         SendSeg(TcpSegment::kAck | TcpSegment::kPsh, it->first, rcvNxt,
                 it->second, false);
     }
@@ -613,7 +862,7 @@ void TcpConnection::EnterTimeWait()
     }
 }
 
-void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
+void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp, uint8_t ecn)
 {
     if(seg.dstPort != localPort) return;
     if(state != Listening && remotePort != 0 && seg.srcPort != remotePort) return;
@@ -622,6 +871,14 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
     bool syn = (flags & TcpSegment::kSyn) != 0;
     bool ack = (flags & TcpSegment::kAck) != 0;
     bool fin = (flags & TcpSegment::kFin) != 0;
+
+    if(ecn == 3 && !seg.payload.empty())
+    {
+        ecnCeSeen = true;
+        ++ecnCePackets;
+    }
+    if(flags & TcpSegment::kCwr)
+        ecnCeSeen = false;
 
     uint16_t pmss = 0;
     uint8_t pwscale = 0;
@@ -638,6 +895,9 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
     {
         if(pmss < 536) pmss = 536;
         if(pmss > 1460) pmss = 1460;
+        peerMss = pmss;
+        if(mssLimit > 0 && mssLimit < pmss)
+            pmss = mssLimit;
         mss = pmss;
     }
     if(syn && hasWs)
@@ -706,8 +966,10 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
             ssthresh = 65535;
             sndWnd = 8192;
             dupAcks = 0;
+            ecnEnabled = (flags & (TcpSegment::kEce | TcpSegment::kCwr)) != 0;
             state = SynRcvd;
-            SendSeg(TcpSegment::kSyn | TcpSegment::kAck, iss, rcvNxt,
+            SendSeg(TcpSegment::kSyn | TcpSegment::kAck |
+                    (ecnEnabled ? TcpSegment::kEce : 0), iss, rcvNxt,
                     std::vector<uint8_t>(), true);
             StartRto();
         }
@@ -722,6 +984,8 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
             rcvNxt = irs + 1;
             sndUna = seg.ack;
             CancelRto();
+            if(flags & TcpSegment::kEce)
+                ecnEnabled = true;
             state = Established;
             SendSeg(TcpSegment::kAck, sndNxt, rcvNxt, std::vector<uint8_t>(), false);
             if(onConnected) onConnected();
@@ -740,8 +1004,11 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
             sndWnd = seg.window;
             if(wsEnabled)
                 sndWnd = uint32_t(seg.window) << peerWscale;
+            if(flags & TcpSegment::kEce)
+                ecnEnabled = true;
             state = SynRcvd;
-            SendSeg(TcpSegment::kSyn | TcpSegment::kAck, iss, rcvNxt,
+            SendSeg(TcpSegment::kSyn | TcpSegment::kAck |
+                    (ecnEnabled ? TcpSegment::kEce : 0), iss, rcvNxt,
                     std::vector<uint8_t>(), true);
             StartRto();
         }
@@ -776,6 +1043,17 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
 
     if(ack)
     {
+        if((flags & TcpSegment::kEce) && ecnEnabled && !ecnReduced &&
+           state == Established)
+        {
+            OnCongestionLoss(TcpNow(scheduler));
+            cwnd = ssthresh;
+            ecnReduced = true;
+            ecnCwrPending = true;
+        }
+        else if(!(flags & TcpSegment::kEce))
+            ecnReduced = false;
+
         if(sackEnabled && !sacks.empty() && sacks[0].first < sacks[0].second &&
            sacks[0].second <= seg.ack)
         {
@@ -797,6 +1075,17 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
             uint32_t acked = seg.ack - sndUna;
             bool wasRecovery = inRecovery;
             sndUna = seg.ack;
+            uint64_t ackNow = TcpNow(scheduler);
+            uint64_t ackedSendTime = 0;
+            if(seg.ack > 0)
+            {
+                auto at = sentAt.upper_bound(seg.ack - 1);
+                if(at != sentAt.begin())
+                {
+                    --at;
+                    ackedSendTime = at->second;
+                }
+            }
             backoff = 0;
             retransmits = 0;
             dupAcks = 0;
@@ -821,31 +1110,36 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
                 rttTiming = false;
             }
 
-            if(cwnd < ssthresh)
-                cwnd += acked;
-            else
-                cwnd += (cwnd > 0) ? (mss * mss) / cwnd : mss;
-            if(cwnd > 65535) cwnd = 65535;
+            GrowCongestion(acked, TcpNow(scheduler));
+            if(prrEnabled && wasRecovery)
+                PrrOnAck(acked);
 
-            std::map<uint32_t, std::vector<uint8_t>> keep;
-            for(auto &kv : unacked)
+            for(auto it = unacked.begin(); it != unacked.end();)
             {
-                uint32_t end = kv.first + uint32_t(kv.second.size());
+                if(it->first >= sndUna)
+                    break;
+                uint32_t end = it->first + uint32_t(it->second.size());
                 if(end <= sndUna)
+                {
+                    it = unacked.erase(it);
                     continue;
-                if(kv.first < sndUna)
-                {
-                    std::size_t cut = std::size_t(sndUna - kv.first);
-                    keep[sndUna] = std::vector<uint8_t>(
-                        kv.second.begin() + std::ptrdiff_t(cut), kv.second.end());
                 }
-                else
-                {
-                    keep[kv.first] = kv.second;
-                }
+                std::size_t cut = std::size_t(sndUna - it->first);
+                auto node = unacked.extract(it);
+                node.key() = sndUna;
+                node.mapped().erase(node.mapped().begin(),
+                                    node.mapped().begin() + std::ptrdiff_t(cut));
+                it = unacked.insert(std::move(node)).position;
+                ++it;
             }
-            unacked.swap(keep);
             ClearSackRetrans();
+            for(auto it = sentAt.begin(); it != sentAt.end() &&
+                                           it->first < sndUna;)
+                it = sentAt.erase(it);
+            if(ackedSendTime != 0 && unacked.count(sndUna) &&
+               !sentAt.count(sndUna))
+                sentAt[sndUna] = ackedSendTime;
+            RackOnAck(seg.ack - 1, ackedSendTime, ackNow, sacks);
 
             if(wasRecovery)
             {
@@ -854,6 +1148,9 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
                     inRecovery = false;
                     sackRetrans.clear();
                     cwnd = ssthresh;
+                    prrCredit = 0;
+                    prrDelivered = 0;
+                    prrOut = 0;
                 }
                 else
                 {
@@ -878,9 +1175,15 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
             Pump();
 
             if(sndUna == sndNxt)
+            {
                 CancelRto();
+                CancelTlp();
+            }
             else
+            {
                 StartRto();
+                ScheduleTlp();
+            }
 
             if(sndWnd == 0 && sendOff < sendBuf.size())
                 StartRto();
@@ -895,9 +1198,13 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
                     inRecovery = true;
                     recover = sndNxt;
                     cwndBeforeRecovery = cwnd;
-                    ssthresh = cwnd / 2;
-                    if(ssthresh < 2 * mss) ssthresh = 2 * mss;
+                    OnCongestionLoss(TcpNow(scheduler));
                     cwnd = ssthresh + 3 * mss;
+                    prrDelivered = 0;
+                    prrOut = 0;
+                    prrCredit = 0;
+                    prrSsthresh = ssthresh;
+                    prrCwndBefore = cwndBeforeRecovery;
                     sackRetrans.clear();
                 }
                 else
@@ -911,6 +1218,9 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
                 cwnd += mss;
                 RetransmitSackHole(sacks);
             }
+            if(rackEnabled && !sacks.empty())
+                RackOnAck(seg.ack > 0 ? seg.ack - 1 : 0, 0,
+                          TcpNow(scheduler), sacks);
         }
 
         if(sndWnd == 0 && sendOff < sendBuf.size())
@@ -979,20 +1289,33 @@ void TcpConnection::OnSegment(const TcpSegment &seg, Ipv4 srcIp)
 
 void TcpConnection::Pump()
 {
+    RefreshPathMtu();
+    if(sendOff < sendBuf.size())
+        MaybeGrowPathMtu();
+    uint16_t segMss = SegmentMss();
     bool sent = false;
+    bool paced = pacingEnabled && scheduler != nullptr;
+    std::size_t budget = paced ? 1 : std::size_t(-1);
 
-    while(sendOff < sendBuf.size())
+    while(sendOff < sendBuf.size() && budget > 0)
     {
         uint32_t inFlight = sndNxt - sndUna;
         uint32_t limit = cwnd < sndWnd ? cwnd : sndWnd;
         if(inFlight >= limit) break;
 
         uint32_t avail = limit - inFlight;
-        if(nagle && !unacked.empty() && (sendBuf.size() - sendOff) < mss)
+        if(nagle && !unacked.empty() && (sendBuf.size() - sendOff) < segMss)
             break;
-        uint32_t n = mss;
+        uint32_t n = segMss;
         if(n > avail) n = avail;
         if(n > sendBuf.size() - sendOff) n = uint32_t(sendBuf.size() - sendOff);
+        if(inRecovery && prrEnabled)
+        {
+            if(prrCredit == 0)
+                break;
+            if(n > prrCredit)
+                n = uint32_t(prrCredit);
+        }
         if(n == 0) break;
 
         std::vector<uint8_t> chunk(sendBuf.begin() + std::ptrdiff_t(sendOff),
@@ -1004,22 +1327,149 @@ void TcpConnection::Pump()
             rttTiming = true;
         }
         unacked[seq] = chunk;
+        if(rackEnabled)
+            sentAt[seq] = TcpNow(scheduler);
         SendSeg(TcpSegment::kAck | TcpSegment::kPsh, seq, rcvNxt, chunk, true);
         sndNxt += n;
         sendOff += n;
+        if(inRecovery && prrEnabled)
+        {
+            if(prrCredit >= n)
+                prrCredit -= n;
+            else
+                prrCredit = 0;
+            prrOut += n;
+        }
         sent = true;
+        if(paced)
+            --budget;
     }
 
     if(sent) StartRto();
+    ScheduleTlp();
+    if(paced && sent && sendOff < sendBuf.size())
+        SchedulePacing();
+    else if(sendOff >= sendBuf.size())
+    {
+        ++pacingGen;
+        pacingPending = false;
+    }
 }
 
 void TcpConnection::SendData(const std::vector<uint8_t> &data)
 {
     if(state != Established && state != CloseWait) return;
+    RefreshPathMtu();
     sendBuf.insert(sendBuf.end(), data.begin(), data.end());
     Pump();
     if(sndWnd == 0 && sendOff < sendBuf.size())
         StartRto();
+}
+
+void TcpConnection::OnPathMtu(uint16_t mtu)
+{
+    if(ApplyPathMtu(mtu))
+        Pump();
+}
+
+void TcpConnection::RefreshPathMtu()
+{
+    if(!queryPathMtu) return;
+    uint16_t mtu = queryPathMtu();
+    if(mtu <= 40) return;
+    if(mtu != pmtuCeiling)
+        pmtuCeiling = mtu;
+    if(mtu < pathMtu)
+        ApplyPathMtu(mtu);
+}
+
+void TcpConnection::MaybeGrowPathMtu()
+{
+    if(!scheduler || pathMtu >= pmtuCeiling)
+        return;
+    uint64_t now = TcpNow(scheduler);
+    if(now < pmtuNextProbe)
+        return;
+
+    uint16_t target = pmtuCeiling;
+    if(target <= pathMtu)
+        return;
+
+    pathMtu = target;
+    uint16_t newLimit = uint16_t(target - 40);
+    if(newLimit < 536) newLimit = 536;
+    if(newLimit > 1460) newLimit = 1460;
+    if(newLimit > mssLimit)
+        mssLimit = newLimit;
+
+    uint16_t base = peerMss ? peerMss : newLimit;
+    if(base > newLimit)
+        base = newLimit;
+    mss = base;
+    pmtuNextProbe = now + pmtuProbeInterval;
+}
+
+uint16_t TcpConnection::SegmentMss() const
+{
+    uint16_t overhead = uint16_t(40 + (tsEnabled ? 12 : 0));
+    uint16_t seg = mss > 65535 ? 65535 : uint16_t(mss);
+    if(pathMtu > overhead)
+    {
+        uint16_t cap = uint16_t(pathMtu - overhead);
+        if(seg > cap)
+            seg = cap;
+    }
+    return seg > 0 ? seg : 1;
+}
+
+bool TcpConnection::ApplyPathMtu(uint16_t mtu)
+{
+    if(mtu <= 40) return false;
+
+    bool changed = false;
+    if(mtu < pathMtu)
+    {
+        pathMtu = mtu;
+        pmtuNextProbe = TcpNow(scheduler) + pmtuProbeInterval;
+        changed = true;
+    }
+
+    uint16_t newMss = uint16_t(mtu - 40);
+    if(newMss < 536) newMss = 536;
+    if(newMss > 1460) newMss = 1460;
+    if(newMss >= mssLimit)
+        return changed;
+
+    mssLimit = newMss;
+    if(mss <= newMss)
+        return true;
+
+    mss = newMss;
+    changed = true;
+
+    uint32_t inFlight = sndNxt - sndUna;
+    if(inFlight > 0 && sendOff >= std::size_t(inFlight))
+    {
+        sendOff -= std::size_t(inFlight);
+        sndNxt = sndUna;
+        unacked.clear();
+        sentAt.clear();
+        sackRetrans.clear();
+        dupAcks = 0;
+        inRecovery = false;
+        prrDelivered = 0;
+        prrOut = 0;
+        prrCredit = 0;
+        rttTiming = false;
+        lastValid = false;
+        CancelRto();
+        CancelTlp();
+        ++pacingGen;
+        pacingPending = false;
+    }
+    if(cwnd < mss)
+        cwnd = mss;
+    return changed;
 }
 
 void TcpConnection::Close()
@@ -1048,6 +1498,13 @@ void TcpConnection::Abort()
 {
     state = Closed;
     CancelRto();
+    CancelTlp();
+    prrCredit = 0;
+    prrDelivered = 0;
+    prrOut = 0;
+    sentAt.clear();
+    ++pacingGen;
+    pacingPending = false;
     lastValid = false;
     unacked.clear();
     ooo.clear();

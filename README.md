@@ -65,9 +65,17 @@ comment-free; all documentation lives in this README and `DEVELOPMENT_LOG.md`.
 - Ethernet frames with EtherType and an opaque byte payload.
 - ARP request/reply with a standard 28-byte wire format and factory helpers.
 - IPv4 packets with a 20-byte header, TTL handling, header checksum, and a byte codec.
+- IPv4 fragmentation and reassembly: egress links emit MTU-sized fragments and
+  ingress ports reassemble them with bounded, timeout-pruned buffers. DF
+  datagrams that exceed a router egress MTU trigger ICMP Fragmentation Needed.
+- IPv6 host addressing, Neighbor Discovery (NS/NA), ICMPv6 `ping6`, connected
+  and static IPv6 routes, router forwarding with 128-bit longest-prefix
+  matching and NDP next-hop resolution, ICMPv6 errors, `ping6`/`traceroute6`,
+  `ping6` timeouts, `nd6-table`, and IPv6 ACLs.
 - Ports and point-to-point links with automatic back-reference wiring.
 - Host behavior: ARP resolution and an ARP cache.
-- Switch behavior: MAC learning, flooding, unicast forwarding, MAC-table aging.
+- Switch behavior: MAC learning, flooding, unicast forwarding, MAC-table aging,
+  and ingress port mirroring (`span`).
 - Router behavior: longest-prefix routing table, TTL handling, next-hop ARP,
   MAC-header rewrite, and automatic connected routes per configured port.
 - Shared ARP agent for hosts and routers (time-based cache aging + request/reply).
@@ -87,7 +95,7 @@ comment-free; all documentation lives in this README and `DEVELOPMENT_LOG.md`.
 - Editing/automation: `remove-device`/`remove-port`/`disconnect`/`rename-device`/
   `set-ip`, `state` JSON snapshots, and Ctrl-C to interrupt a long run.
 - Diagnostics and visualization: `devices`/`links`/`ports`/`routes`/`arp-table`/
-  `mac-table`, `traceroute`, and `export dot|svg` (diagram without a GUI).
+  `mac-table`/`drop-stats`, `traceroute`, and `export dot|svg` (diagram without a GUI).
 - UDP datagrams with a configurable per-host echo service (`udp-echo`/`udp-send`).
 - Real TCP service and client (`tcp-listen`/`tcp-connect`): three-way handshake,
   sequence/ACK, out-of-order reassembly, RTT-based RTO with oldest-unacked
@@ -96,7 +104,17 @@ comment-free; all documentation lives in this README and `DEVELOPMENT_LOG.md`.
   open/close, PAWS for timestamps, FIN/TIME_WAIT, slow-start/congestion-avoidance,
   MSS negotiation, window scaling, SACK (including DSACK and SACK-based recovery
   with cwnd undo) and TCP timestamps (RTT sampling), with delayed ACK, Nagle and
-  validated RST handling.
+  validated RST handling. Congestion control is selectable (Reno/CUBIC-style)
+  via `tcp-congestion`; Tail Loss Probe (`tcp-tlp`), PRR-style recovery pacing
+  (`tcp-prr`), RACK-style SACK loss detection (`tcp-rack`) and optional
+  token-paced transmission (`tcp-pacing`) improve recovery; ephemeral local
+  ports are collision-checked and configurable (`tcp-port-range`). ECN
+  negotiation, CE echo and router CE marking (`ecn-mark`) are supported; TCP
+  MSS follows the configured link MTU. TCP segments set DF, data sizing accounts
+  for timestamp options, and ICMP Fragmentation Needed lowers the path MTU and
+  re-segments unacked data; after a hold interval, PMTU is re-probed upward to
+  the local link MTU. `tcp-send` appends data to an established connection.
+  `tcp-status` reports `mss=` and `pmtu=`.
   Listener backlog is bounded with
   stateless SYN cookies; each host is capped at 256 concurrent connections with
   dropped/reset counters and `tcp-status`.
@@ -131,10 +149,13 @@ comment-free; all documentation lives in this README and `DEVELOPMENT_LOG.md`.
 - OSPFv2 (`ospf`, `ospf-status`): RFC 2328 packets, Hello / neighbor state
   machine, DR/BDR election, per-area LSDB aging/refresh with DD/LSR/LSU/LSAck
   exchange and retransmission, Dijkstra SPF routes, ABR Type 3 summaries,
-  Type 4 ASBR summaries, Type 5 external routes (`ospf-external`), stub and
+  Type 4 ASBR summaries, Type 5 external routes (`ospf-external`), default
+  origination (`ospf-default-originate`), connected/static redistribution
+  (`ospf-redistribute`), area range summaries (`ospf-summary`), stub and
   NSSA areas (`ospf-area-type`) with Type 7 translation, interface cost/passive
   policy, and simple-password, MD5, SHA-1 or SHA-256 authentication (`ospf-auth`).
-- Link impairment (`set-link ... loss/dup/jitter/clear`) for reliability testing.
+- Link impairment (`set-link ... loss/dup/jitter/mtu/clear`) for reliability
+  testing and MTU-driven fragmentation.
 - Per-router ACLs (in/out, allow/deny by source/destination prefix and protocol).
 - Terminal topology `map` and a tree generator (`generate tree`) for scale tests.
 
@@ -402,20 +423,30 @@ An IPv4 packet with a simplified (but standard-shaped) 20-byte header.
 |--------|-------------|
 | `uint8_t ttl` | time to live (default `kDefaultTtl = 64`) |
 | `uint8_t protocol` | upper-layer protocol (TCP 6 / UDP 17 / ICMP 1) |
+| `uint8_t ecn` | ECN codepoint (Not-ECT/ECT(0)/ECT(1)/CE) |
+| `uint16_t identification` | IPv4 datagram ID (used for fragments) |
+| `bool dontFragment` | DF flag |
+| `bool moreFragments` | MF flag |
+| `uint16_t fragmentOffset` | fragment offset in 8-byte units |
+| `bool IsFragment() const` | true when MF is set or the offset is non-zero |
 | `Ipv4 srcIp`, `Ipv4 dstIp` | addresses |
 | `std::vector<uint8_t> payload` | carried bytes |
 | `static constexpr uint8_t  kDefaultTtl = 64` | default TTL |
 | `static constexpr size_t   kHeaderSize = 20` | header size in bytes |
 | `std::vector<uint8_t> ToBytes() const` | 20-byte header + payload |
-| `static bool TryFromBytes(const std::vector<uint8_t>&, IpPacket&)` | validates length and `0x45` |
+| `static bool TryFromBytes(const std::vector<uint8_t>&, IpPacket&)` | validates length, version, and header checksum |
 | `void DecTtl()` | decrement TTL, guarding underflow at 0 |
 | `bool operator== const`, `std::string ToString() const` | compare / debug |
 
-The checksum, identification, flags, and options are not modeled (set to 0);
-version/IHL are fixed to `0x45` (IPv4, 20-byte header). This is sufficient for
-routing logic and keeps the codec simple. `ToBytes` throws `std::length_error` if
-the payload would overflow the 16-bit total length; `TryFromBytes` validates the
-total-length field before slicing the payload.
+The DSCP field and IP options are not modeled; identification, DF/MF and
+fragment offset are carried so links can fragment datagrams and ports can
+reassemble them. Routers drop DF datagrams that exceed the egress link MTU and
+return ICMP Fragmentation Needed with the next-hop MTU.
+Version/IHL are fixed to `0x45` (IPv4, 20-byte header). This is sufficient for
+routing logic and keeps the codec simple. `ToBytes` generates the header
+checksum and throws `std::length_error` if the payload would overflow the 16-bit
+total length; `TryFromBytes` validates the total-length field before slicing the
+payload.
 
 ### `ByteIO` — `core/ByteIO.hpp`
 
@@ -517,6 +548,7 @@ handling.
 | `Mac mac` | interface MAC |
 | `bool hasIp` | whether an L3 address is configured |
 | `Ipv4 ip`, `Ipv4Subnet subnet` | L3 address / subnet (when `hasIp`) |
+| `bool hasIp6`, `Ipv6 ip6` | optional IPv6 host address |
 | `Link* link` | attached link (nullptr if unconnected) |
 | `Device* owner` | owning device |
 | `void Send(FramePtr)` | hand a frame to the link |
@@ -582,13 +614,13 @@ inside one event loop.
 | Offset | Size | Field |
 |-------:|-----:|-------|
 | 0  | 1 | version/IHL = `0x45` |
-| 1  | 1 | TOS = `0` |
+| 1  | 1 | TOS = ECN codepoint (DSCP `0`) |
 | 2  | 2 | total length (header + payload) |
-| 4  | 2 | identification = `0` |
-| 6  | 2 | flags + fragment offset = `0` |
+| 4  | 2 | identification |
+| 6  | 2 | DF/MF flags + fragment offset |
 | 8  | 1 | TTL |
 | 9  | 1 | protocol |
-| 10 | 2 | header checksum = `0` (not modeled) |
+| 10 | 2 | header checksum (generated/verified) |
 | 12 | 4 | source IP |
 | 16 | 4 | destination IP |
 | 20 | … | payload |
@@ -720,22 +752,33 @@ set-stp    <switch> on|off                     # enable/disable spanning tree
 set-stp-mode <switch> stp|rstp                 # RSTP-style rapid mode
 set-bridge <switch> <priority>                 # bridge priority (default 32768)
 stp-status <switch>                            # print root + per-port state
-set-link   <dev:idx> down|up                   # bring a link down/up (STP reconverge)
+span       <switch> <src-dev:idx> <dst-dev:idx> | off  # ingress port mirroring
+set-link   <dev:idx> down|up|loss|dup|jitter|mtu|clear
 stats      <device>                            # per-port rx/tx/drop counters
+drop-stats <device>                            # per-port drop-reason breakdown
 devices | links                                # list devices / links
 ports      <device>                            # port table (MAC/IP/VLAN/STP/counters)
 routes     <router>                            # routing table
 arp-table  <device>                            # ARP cache
 mac-table  <switch>                            # MAC table
 traceroute <device> <target-ip> [max-hops]     # ICMP traceroute
+traceroute6 <device> <ipv6> [max-hops]         # ICMPv6 traceroute
 export     dot|svg <file>                      # export topology diagram
 udp-echo   <device> on|off [port]              # UDP echo service
-udp-send   <device> <ip> <dport> <text...>     # send a UDP datagram
+udp-send   <device> <ip> <dport> [df] <text...>  # send a UDP datagram
 tcp-listen <device> on|off [port]              # real TCP echo service
 tcp-connect <device> <ip> <port> [text...]     # real TCP client
+tcp-send   <device> <text...>                  # send on an established connection
 tcp-keepalive <device> on [idle interval count]|off
-tcp-status <device>                            # connections, RTO/window/counters
+tcp-status <device>                            # connections, RTO/mss/pmtu/counters
 tcp-backlog <device> <1-1024>                  # half-open SYN backlog
+tcp-congestion <device> reno|cubic             # select congestion control
+tcp-tlp <device> on|off                        # Tail Loss Probe
+tcp-prr <device> on|off                        # proportional recovery pacing
+tcp-rack <device> on|off                       # RACK-style loss detection
+tcp-pacing <device> on|off                     # paced transmission
+tcp-port-range <device> <min> <max>            # ephemeral local ports
+ecn-mark <router> <dev:idx> on|off             # mark ECT data as CE
 dhcp-server <device> on <start> <end> <prefix> <gateway> [dns] | off
 dhcp-client <device> [port-index]              # acquire a lease
 dhcp-lease-time <device> <seconds>             # server lease duration
@@ -774,16 +817,21 @@ nat-table  <router>
 rip        <router> on|off                     # RIP v2-lite dynamic routing
 rip-status <router>                            # routes with metric/next hop
 ospf       <router> on|off                     # OSPFv2 (single/multi-area)
+ospf-router-id <router> <id>                   # explicit OSPF router ID
 ospf-status <router>                           # interfaces, neighbors, LSDB, routes
 ospf-auth  <router> none|simple <password>|md5|sha1|sha256 <key-id> <key>
 ospf-cost  <router> <dev:idx> <1-65535>          # interface cost
 ospf-passive <router> <dev:idx> on|off           # suppress Hellos
 ospf-area  <router> <dev:idx> <area-id>          # per-interface OSPF area
 ospf-area-type <router> <area-id> stub|nssa|normal    # area policy
+ospf-summary <router> <area-id> <prefix> [not-advertise] | clear
 ospf-external <router> <ip/prefix> [metric]|clear  # Type 5 external route
+ospf-default-originate <router> on|off [metric] [type1|type2]
+ospf-redistribute <router> connected|static|off [metric] [type1|type2]
 tcp-lite-echo   <device> on|off [port]          # deprecated (NOT TCP)
 tcp-lite-echo-client <device> <ip> <port> <text...>
 acl        <router> in|out allow|deny <src/p> <dst/p> <proto|any>
+acl6       <router> in|out allow|deny <src6/p> <dst6/p> <proto|any>
 map                                            # ASCII topology map
 generate   tree <depth> <fanout>               # build a large tree topology
 remove-device <name>                           # delete a device (and its links)
@@ -791,10 +839,16 @@ remove-port   <dev:idx>                        # delete a port (and its link)
 disconnect    <dev:idx>                        # remove the link on a port
 rename-device <old> <new>                      # rename a device
 set-ip     <dev:idx> <ip>/<prefix>             # change a port's IP/subnet
+set-ip6    <dev:idx> <ipv6>[/prefix]           # enable a port's IPv6 address
 state                                          # print a JSON snapshot
 set-gateway <device> <gw-ip>                   # default gateway for a host
+set-gateway6 <device> <gw-ipv6>                # IPv6 default gateway
+add-route6 <router> <dst6/prefix> <next-hop-ip6>  # static IPv6 route
+routes6    <router>                            # IPv6 routing table
 arp        <device> <target-ip>                # inject an ARP request
+nd6-table  <device>                            # IPv6 neighbor cache
 ping       <device> <target-ip> [ttl]          # ICMP echo (auto-ARP, RTT)
+ping6      <device> <ipv6>                     # ICMPv6 echo with NDP
 run [duration] | wait [duration] | step [n] | trace on|off       # bounded run / idle wait / step / trace
 pcap       <file> | pcap off                    # capture frames to a .pcap file
 save       <file.yn>                            # export scene (.yn, JSON)
@@ -857,8 +911,9 @@ runaway scripts. `--no-lua` disables Lua entirely.
 
 - `pcap <file>` captures every frame transmitted on a link into a standard pcap
   file (Ethernet link type); `pcap off` stops and reports the frame count.
-- `save <file.yn>` exports the scene (devices, ports, links, STP, routes,
-  gateways) to a `.yn` file (JSON content); `load <file.yn>` replays it. Scenes may
+- `save <file.yn>` exports the scene (devices, ports incl. IPv6 addresses, links,
+  STP/SPAN, IPv4/IPv6 routes, gateways, ACLs, NAT) to a `.yn` file (JSON content);
+  `load` replays it. Scenes may
   also carry an optional `layout` array (ignored by the CLI). See `tests/config.yn`.
 - `run [duration]` advances at most `duration` time units (default 1000) or until
   the queue is empty. The bound keeps periodic STP Hello timers from running
@@ -870,8 +925,8 @@ Three layers of tests, all runnable with `make test`:
 
 - `tests/unit/unit_tests.cpp` — unit tests for the codecs and addressing
   (`Ipv4`, `Ipv4Subnet`, `Mac`, `ARP`, `IpPacket`, `IcmpMessage`,
-  `EthernetFrame` incl. 802.1Q), TCP option/reliability behaviour and OSPF
-  packet/LSA checksums (357 checks), built with `-Werror` + ASan/UBSan.
+  `EthernetFrame` incl. 802.1Q), TCP option/reliability/PMTU behaviour and OSPF
+  packet/LSA checksums (497 checks), built with `-Werror` + ASan/UBSan.
 - `tests/fuzz_parsers.cpp` — deterministic fuzzing of every byte parser; must
   stay ASan/UBSan-clean.
 - `tests/*.txt` scenarios — each `NAME.txt` is a scene and `NAME.want` a substring
@@ -879,8 +934,10 @@ Three layers of tests, all runnable with `make test`:
   timeout). Scenarios cover ARP, auto-ARP ping, ping timeout/RTT, TTL exceeded,
   ICMP unreachable, cross-subnet routing, VLAN isolation, 802.1Q trunking, STP
   loop prevention / reconvergence, port counters, JSON save/load, pcap capture,
-  RSTP, TCP (direct/router/loss), DHCP/DNS, NAT, RIP, and OSPF
-  (adjacency/Full/loss/authentication).
+  RSTP, TCP (direct/router/loss/PMTU), IPv4 fragmentation (direct/router transit)
+  and DF/ICMP Fragmentation Needed, drop reasons, IPv6 NDP/ping6/traceroute6/
+  errors/timeouts/routing/ACLs and scene persistence, SPAN mirroring, DHCP/DNS,
+  NAT, RIP, and OSPF (adjacency/Full/loss/authentication).
 - `tests/lua_ping.lua` — a Lua scenario (loop + `exec` + `run`) when Lua is built.
 
 ```sh
@@ -910,11 +967,16 @@ mingw32-make -f Makefile.win gotest
 
 `ynstress` repeats scenario suites in parallel. `ynpcap` validates a capture's
 IPv4/TCP/OSPF headers, checksums, TCP handshake flow, SYN options (MSS/WS/SACK/
-timestamps), and OSPF packet/LSA checksums; with `-ospf-key` it verifies OSPF MD5
-digests. It exits non-zero on any issue.
+timestamps), MSS-fit of payloads, DF/ECN use, SACK blocks, and repeated
+sequences; with `-ospf-key` it verifies OSPF MD5 digests. It exits non-zero on
+any issue.
+
+`make pcapcheck` runs an offline TCP capture through `ynpcap`; `make check`
+includes it alongside the coverage, soak, and perf gates.
 
 `make check` adds a coverage gate (about 58% now, floor 54%), a bounded-memory soak
-(256 MiB address-space cap with STP reconvergence), and a throughput floor.
+(256 MiB address-space cap with STP reconvergence), a throughput floor, and the
+offline PCAP conformance gate.
 
 ## Quick start
 
@@ -1062,6 +1124,7 @@ Implemented:
 - [x] `Ipv4`, `Ipv4Subnet`, `Mac`
 - [x] `ByteIO` shared big-endian codec
 - [x] `EthernetFrame`, `ARP`, `IpPacket`
+- [x] IPv4 fragmentation and reassembly (link MTU + per-port buffers)
 - [x] `Port`, `Link`, `Device` base
 - [x] `EndDevice` (ARP host)
 - [x] `Switch` (learning, flooding, forwarding, aging)
@@ -1093,15 +1156,15 @@ Implemented:
 - [x] Lua scripting (real Lua 5.4; `exec` / `run` / `log`)
 - [x] CI (gcc/clang matrix) + `.clang-tidy` config
 - [x] STP link-failure reconvergence (`set-link down|up`) with MAC flush
-- [x] Per-port rx/tx/drop counters (`stats <device>`)
-- [x] STP Hello/Max-Age keepalives + RSTP-style rapid mode
+- [x] Per-port rx/tx/drop counters (`stats <device>`) and drop reasons (`drop-stats`)
+- [x] STP Hello/Max-Age keepalives + RSTP-style rapid mode + ingress SPAN mirroring
 - [x] pcap frame capture (`pcap <file>` / `pcap off`)
 - [x] JSON topology save/load (`save` / `load`)
 - [x] Bounded `run [duration]` (safe with periodic timers)
 - [x] Makefile header dependency tracking (`-MMD -MP`)
 - [x] Windows CLI (`netsim.exe`) with bundled Lua, icon and version resource
 - [x] Editing: `remove-device` / `remove-port` / `disconnect` / `rename-device` / `set-ip`
-- [x] `state` JSON snapshot; Ctrl-C interrupts a running `run`
+- [x] `state` JSON snapshot (incl. IPv6 routes/neighbors); Ctrl-C interrupts a run
 - [x] Diagnostics (`devices`/`links`/`ports`/`routes`/`arp-table`/`mac-table`),
       `traceroute`, and topology `export dot|svg`
 - [x] UDP datagrams + host echo service; `map` and `generate tree` for scale
@@ -1115,10 +1178,15 @@ Implemented:
 - [x] OSPFv2: RFC packets, DR/BDR, per-area LSDB, SPF, ABR Type 3/4 summaries,
       Type 5 external routes with withdrawal, stub/NSSA areas with Type 7
       translation/withdrawal, cost/passive, MD5/SHA-1/SHA-256 auth
+- [x] IPv6 host addressing, NDP, ICMPv6 `ping6`/traceroute/errors, `nd6-table`,
+      connected/static routing, IPv6 ACLs, and router forwarding
+- [x] IPv4/IPv6 ACLs with ordered in/out allow/deny rules; ACL/NAT persistence
+- [x] TCP PMTU decrease with re-segmentation and basic upward re-probing
 - [x] Hard resource caps (topology, event queue, pcap, scripts, scenes)
 - [x] Interactive line editing, history, and Tab completion
 - [x] `--json` NDJSON + `--log` structured output
-- [x] `make check`: coverage gate, bounded soak, throughput floor; CI check/macOS jobs
+- [x] `make check`: coverage gate, bounded soak, throughput floor, and offline
+      TCP PCAP conformance; CI check/macOS jobs
 - [x] Packaging: portable CLI ZIP (`packaging/build-win.ps1`) + `signtool` script;
       Windows CI job building `netsim.exe`
 - [x] Scene workflow: `save`/`load` `.yn`, `new` reset
@@ -1127,17 +1195,39 @@ Implemented:
       direct `.yn` loading, `demo`/`new`, man page (`docs/netsim.1`)
 - [x] Open source under GNU GPLv3 (`LICENSE`, `COPYRIGHT`, `SOURCE-CODE.md`)
 - [x] Examples, operator user guide, CONTRIBUTING, and SECURITY docs
+- [x] Offline TCP PCAP conformance gate (`make pcapcheck`) with handshake,
+      MSS-fit, DF, ECN, SACK, and repeated-sequence checks
 - [x] `VERSION`, `CHANGELOG.md`, `make dist` / `make install` packaging
+
+### TCP status (simulator scope)
+
+TCP here is a deterministic **simulation** stack, not a live-wire or production
+TCP replacement. The intended standard is byte-accurate offline behavior inside
+the simulator; real-network interoperability is not a product requirement.
+
+- Coverage is high for simulator work: state machine, reliability, SACK/DSACK,
+  timestamps/PAWS, keepalive, zero-window persist, simultaneous open/close,
+  SYN cookies/backlog, Reno/CUBIC-style congestion control, TLP, PRR, RACK,
+  optional pacing, ECN, MSS/MTU, DF/ICMP PMTU re-segmentation and basic growth
+  re-probing, and diagnostics.
+- Validation uses unit tests, deterministic scenarios, and the offline `ynpcap`
+  analyzer; no live sockets or external services are involved.
+- Remaining simulator-scope gaps include the full RFC 8899 PLPMTUD search and
+  backoff state machine (basic growth probing exists), deeper RFC 9293 edge-case
+  coverage, and reference-stack capture coverage.
+- Live-stack interoperability, TAP bridging, and replacement of an OS TCP stack
+  are explicitly out of scope; the live bridge remains archived under `legacy/`.
 
 Planned:
 
-- [ ] TCP: real-stack interoperability and PCAP conformance verification.
-- [ ] OSPF virtual links, IPv6, full RSTP.
+- [ ] TCP: reference-stack capture corpus for offline PCAP conformance (no live
+      networking or TAP bridge).
+- [ ] OSPF virtual links, IPv6 OSPFv3, full RSTP.
 - [ ] Scale/engineering: `--jobs` parallel scenarios, `src/` restructure, CMake
       presets, three-platform CI.
 - [ ] Full IEEE 802.1w proposal/agreement (current RSTP mode is a rapid subset)
 - [ ] clang-tidy enforcement (advisory CI job present; needs tuning / compile DB)
-- [ ] Observability: drop-reason breakdown (counters done)
+- [x] Observability: per-port drop-reason breakdown (`drop-stats`)
 - [ ] Event allocator/pool — only if a real workload justifies it (single-thread
       throughput already far exceeds simulator load)
 

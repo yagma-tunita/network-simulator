@@ -12,6 +12,8 @@ struct TcpSegment
     static constexpr uint8_t kRst = 0x04;
     static constexpr uint8_t kPsh = 0x08;
     static constexpr uint8_t kAck = 0x10;
+    static constexpr uint8_t kEce = 0x40;
+    static constexpr uint8_t kCwr = 0x80;
     static constexpr std::size_t kHeaderSize = 20;
     static constexpr std::size_t kMaxOptions = 40;
 
@@ -23,6 +25,7 @@ struct TcpSegment
     uint16_t window = 64240;
     std::vector<uint8_t> options;
     std::vector<uint8_t> payload;
+    uint8_t ecn = 0;
 
     bool operator==(const TcpSegment &o) const;
 

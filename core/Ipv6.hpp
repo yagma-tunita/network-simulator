@@ -19,4 +19,5 @@ struct Ipv6
 
     bool operator==(const Ipv6 &other) const { return bytes == other.bytes; }
     bool operator!=(const Ipv6 &other) const { return !(*this == other); }
+    bool operator<(const Ipv6 &other) const { return bytes < other.bytes; }
 };

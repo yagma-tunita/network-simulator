@@ -80,9 +80,12 @@ void Switch::OnFrame(Port *port, FramePtr frame)
        port->stpState != StpPortState::Learning &&
        port->stpState != StpPortState::Forwarding)
     {
-        ++port->drop;
+        port->CountDrop(DropReason::Stp);
         return;
     }
+
+    if(spanSource == port && spanDest && spanDest != port)
+        Emit(spanDest, frame->HasVlan() ? frame->VlanId() : port->vlan, frame);
 
     uint64_t now = clock ? clock->Now() : 0;
 
@@ -116,7 +119,7 @@ void Switch::Emit(Port *out, uint16_t vid, FramePtr frame)
 {
     if(stpEnabled && out->stpState != StpPortState::Forwarding)
     {
-        ++out->drop;
+        out->CountDrop(DropReason::Stp);
         return;
     }
 
@@ -132,7 +135,7 @@ void Switch::Emit(Port *out, uint16_t vid, FramePtr frame)
 
     if(out->vlan != vid)
     {
-        ++out->drop;
+        out->CountDrop(DropReason::Vlan);
         return;
     }
 

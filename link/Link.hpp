@@ -18,6 +18,8 @@ struct Link
     double lossPct = 0.0;
     double dupPct = 0.0;
     uint64_t jitter = 0;
+    uint16_t mtu = 1500;
+    uint16_t ipIdCounter = 1;
     std::mt19937 rng{ 0x5eed1234u };
 
     void SetScheduler(Scheduler *s);
@@ -28,6 +30,7 @@ struct Link
     void SetLoss(double pct);
     void SetDup(double pct);
     void SetJitter(uint64_t max);
+    void SetMtu(uint16_t bytes) { mtu = bytes; }
     void ClearImpair();
 
     void Transmit(Port *from, FramePtr frame);

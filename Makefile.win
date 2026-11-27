@@ -11,7 +11,7 @@ LUA_OBJS := $(patsubst third_party/lua/%.c,build/win/lua/%.o,$(LUA_SRCS))
 RES := build/win/yanas_res.o
 CLI := netsim.exe
 
-.PHONY: all clean cli tools gotest
+.PHONY: all clean cli tools gotest pcapcheck
 
 all: $(CLI)
 cli: $(CLI)
@@ -41,3 +41,6 @@ tools:
 gotest:
 	cd tools\ynstress && $(GO) test ./...
 	cd tools\ynpcap && $(GO) test ./...
+
+pcapcheck: all tools
+	powershell -NoProfile -ExecutionPolicy Bypass -File tests\pcap_conformance.ps1

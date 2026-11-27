@@ -1,0 +1,5 @@
+2001:db8:2::/64 -> direct
+ping6 reply from 2001:db8:2::2 seq=1
+R1 nd6:
+  2001:db8:1::1 -> aa:aa:aa:aa:aa:01
+  2001:db8:2::2 -> aa:aa:aa:aa:aa:02

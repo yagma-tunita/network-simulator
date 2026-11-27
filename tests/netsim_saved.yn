@@ -1,9 +1,0 @@
-{
-  "devices": [{"name":"PC1","kind":"end"},{"name":"PC2","kind":"end"}],
-  "ports": [{"device":"PC1","mac":"aa:aa:aa:aa:aa:01","ip":"192.168.1.1","prefix":24,"vlan":0,"tagged":false},{"device":"PC2","mac":"aa:aa:aa:aa:aa:02","ip":"192.168.1.2","prefix":24,"vlan":0,"tagged":false}],
-  "links": [{"a_device":"PC1","a_port":0,"b_device":"PC2","b_port":0,"delay":1}],
-  "stp": [],
-  "routes": [],
-  "gateways": [],
-  "layout": []
-}

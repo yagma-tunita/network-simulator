@@ -1,6 +1,9 @@
 #include "core/Ipv4.hpp"
 #include "core/Ipv4Subnet.hpp"
 #include "core/Ipv6.hpp"
+#include "core/Ipv6Subnet.hpp"
+#include "core/Ipv6Packet.hpp"
+#include "core/Icmpv6Message.hpp"
 #include "core/Mac.hpp"
 #include "core/ARP.hpp"
 #include "core/IpPacket.hpp"
@@ -205,6 +208,28 @@ static void TestIpPacket()
     CHECK(IpPacket::TryFromBytes(b, out));
     CHECK(out == p);
 
+    IpPacket f(Ipv4("10.0.0.1"), Ipv4("10.0.0.2"), IpPacket::kUdp,
+               std::vector<uint8_t>(24, 0xAB));
+    f.identification = 0x1234;
+    f.dontFragment = true;
+    f.moreFragments = true;
+    f.fragmentOffset = 185;
+    std::vector<uint8_t> fb = f.ToBytes();
+    IpPacket fo;
+    CHECK(IpPacket::TryFromBytes(fb, fo));
+    CHECK(fo == f);
+    CHECK(fo.IsFragment());
+    CHECK(fo.dontFragment);
+    CHECK(fo.moreFragments);
+    CHECK(fo.fragmentOffset == 185);
+
+    f.moreFragments = false;
+    f.fragmentOffset = 0;
+    fb = f.ToBytes();
+    CHECK(IpPacket::TryFromBytes(fb, fo));
+    CHECK(fo == f);
+    CHECK(!fo.IsFragment());
+
     CHECK(!IpPacket::TryFromBytes(std::vector<uint8_t>(10, 0), out));
 
     std::vector<uint8_t> bad = b;
@@ -239,6 +264,16 @@ static void TestIcmp()
     CHECK(IcmpMessage::TryFromBytes(b, out));
     CHECK(out == m);
     CHECK(!IcmpMessage::TryFromBytes(std::vector<uint8_t>(7, 0), out));
+
+    IcmpMessage pm;
+    pm.type = IcmpMessage::kDestUnreachable;
+    pm.code = IcmpMessage::kFragNeeded;
+    pm.nextHopMtu = 576;
+    pm.payload = {1, 2, 3, 4};
+    b = pm.ToBytes();
+    CHECK(IcmpMessage::TryFromBytes(b, out));
+    CHECK(out == pm);
+    CHECK(out.nextHopMtu == 576);
 }
 
 static void TestEthernet()
@@ -469,6 +504,19 @@ static void TestTopologyBuilder()
     CHECK(t.links.empty());
 }
 
+static void TestDropReasons()
+{
+    Port p;
+    p.CountDrop(DropReason::Mtu);
+    p.CountDrop(DropReason::Mtu);
+    p.CountDrop(DropReason::Acl);
+    CHECK(p.drop == 3);
+    CHECK(p.dropByReason[static_cast<std::size_t>(DropReason::Mtu)] == 2);
+    CHECK(p.dropByReason[static_cast<std::size_t>(DropReason::Acl)] == 1);
+    CHECK(std::string(DropReasonName(DropReason::Mtu)) == "mtu");
+    CHECK(std::string(DropReasonName(DropReason::NoRoute)) == "no-route");
+}
+
 static void TestPingEndToEnd()
 {
     Engine e;
@@ -570,6 +618,10 @@ static void TestJsonRoundTrip()
     t.AddPort("A", Mac("aa:aa:aa:aa:aa:01"), Ipv4("10.0.0.1"), 24);
     t.AddPort("B", Mac("aa:aa:aa:aa:aa:02"), Ipv4("10.0.0.2"), 24);
     t.Connect("A", 0, "B", 0);
+    Port *pa = t.FindPort("A", 0);
+    CHECK(pa != nullptr);
+    pa->hasIp6 = true;
+    pa->ip6 = Ipv6("2001:db8::1");
 
     LayoutMap layout;
     layout["A"] = std::make_pair(10, 20);
@@ -582,6 +634,11 @@ static void TestJsonRoundTrip()
     CHECK(ParseConfigJson("/tmp/yanas_unit.yn", cmds, parsed, err2));
     CHECK(!cmds.empty());
     CHECK(parsed.count("A") == 1);
+    bool hasIpv6 = false;
+    for(const std::string &c : cmds)
+        if(c == "set-ip6 A:0 2001:db8::1/64")
+            hasIpv6 = true;
+    CHECK(hasIpv6);
     CHECK(!ParseConfigJson("/tmp/yanas_missing.yn", cmds, parsed, err2));
     std::remove("/tmp/yanas_unit.yn");
 }
@@ -607,6 +664,43 @@ static void TestCommandRunner()
 
     Capture([&]() { RunScriptLine(ctx, "new"); });
     CHECK(t.devices.empty());
+}
+
+static void TestStateIpv6()
+{
+    Engine e;
+    Topology t;
+    t.SetEngine(&e);
+    t.AddEndDevice("A");
+    t.AddRouter("R");
+    t.AddPort("A", Mac("aa:aa:aa:aa:aa:01"));
+    t.AddPort("R", Mac("aa:00:00:00:00:01"));
+    t.AddPort("R", Mac("aa:00:00:00:00:02"));
+
+    Port *pa = t.FindPort("A", 0);
+    pa->hasIp6 = true;
+    pa->ip6 = Ipv6("2001:db8:1::1");
+    pa->prefix6 = 64;
+    EndDevice *a = dynamic_cast<EndDevice *>(t.FindDevice("A"));
+    CHECK(a != nullptr);
+    a->ndCache[Ipv6("2001:db8:1::254")] = Mac("aa:00:00:00:00:01");
+
+    Router *r = dynamic_cast<Router *>(t.FindDevice("R"));
+    CHECK(r != nullptr);
+    Port *r0 = t.FindPort("R", 0);
+    Port *r1 = t.FindPort("R", 1);
+    r0->hasIp6 = true;
+    r0->ip6 = Ipv6("2001:db8:1::254");
+    r0->prefix6 = 64;
+    r1->hasIp6 = true;
+    r1->ip6 = Ipv6("2001:db8:2::254");
+    r1->prefix6 = 64;
+    r->RebuildConnected6();
+
+    std::string out = StateSnapshot(t, e);
+    CHECK(out.find("\"nd6\":[{\"ip\":\"2001:db8:1::254\"") != std::string::npos);
+    CHECK(out.find("\"routes6\":[") != std::string::npos);
+    CHECK(out.find("2001:db8:2::/64") != std::string::npos);
 }
 
 static void TestExport()
@@ -1074,6 +1168,55 @@ static void TestIpv6()
     CHECK(out.answers[0].ip6.ToString() == "2001:db8::5");
 }
 
+static void TestIpv6Packet()
+{
+    Ipv6Subnet sn(Ipv6("2001:db8::1"), 64);
+    CHECK(sn.Contains(Ipv6("2001:db8::abcd")));
+    CHECK(!sn.Contains(Ipv6("2001:db9::1")));
+    CHECK(sn.ToString() == "2001:db8::/64");
+    Ipv6Subnet parsed;
+    CHECK(Ipv6Subnet::TryParse("2001:db8:1::/48", parsed));
+    CHECK(parsed.Contains(Ipv6("2001:db8:1::99")));
+    CHECK(!Ipv6Subnet::TryParse("2001:db8::/129", parsed));
+
+    Ipv6 src("2001:db8::1");
+    Ipv6 dst("2001:db8::2");
+    Ipv6Packet p(src, dst, Icmpv6Message::kNextHeader, {1, 2, 3, 4});
+    std::vector<uint8_t> b = p.ToBytes();
+    CHECK(b.size() == Ipv6Packet::kHeaderSize + 4);
+    Ipv6Packet out;
+    CHECK(Ipv6Packet::TryFromBytes(b, out));
+    CHECK(out == p);
+    CHECK(out.srcIp == src);
+    CHECK(out.dstIp == dst);
+    CHECK(out.nextHeader == Icmpv6Message::kNextHeader);
+    CHECK(!Ipv6Packet::TryFromBytes(std::vector<uint8_t>(20, 0), out));
+
+    Icmpv6Message echo;
+    echo.type = Icmpv6Message::kEchoRequest;
+    echo.id = 0x1234;
+    echo.seq = 9;
+    echo.payload = {5, 6, 7};
+    std::vector<uint8_t> eb = echo.ToBytes(src, dst);
+    Icmpv6Message eo;
+    CHECK(Icmpv6Message::TryFromBytes(eb, src, dst, eo));
+    CHECK(eo == echo);
+    CHECK(!Icmpv6Message::TryFromBytes(
+        std::vector<uint8_t>(eb.begin(), eb.end() - 1), src, dst, eo));
+
+    Icmpv6Message ns;
+    ns.type = Icmpv6Message::kNeighborSolicit;
+    ns.target = dst;
+    ns.options = NdpLinkLayerOption(1, Mac("aa:bb:cc:dd:ee:ff"));
+    std::vector<uint8_t> nb = ns.ToBytes(src, dst);
+    Icmpv6Message no;
+    CHECK(Icmpv6Message::TryFromBytes(nb, src, dst, no));
+    CHECK(no.target == dst);
+    Mac mac;
+    CHECK(NdpParseLinkLayerOption(no.options, 1, mac));
+    CHECK(mac == Mac("aa:bb:cc:dd:ee:ff"));
+}
+
 static void TestHmacTsig()
 {
     auto hex = [](const std::vector<uint8_t> &v)
@@ -1514,6 +1657,48 @@ static void TestTcpCore()
     CHECK(b.state == TcpConnection::Closed);
 }
 
+static void TestTcpPathMtu()
+{
+    Engine e;
+    TcpConnection a, b;
+    a.SetScheduler(&e);
+    b.SetScheduler(&e);
+    Wire w(&e, &a, &b);
+
+    b.Listen(Ipv4("10.0.0.2"), 80);
+    a.OpenActive(Ipv4("10.0.0.1"), 40000, Ipv4("10.0.0.2"), 80, 0);
+    e.RunUntil(1000);
+    CHECK(a.state == TcpConnection::Established);
+    CHECK(a.tsEnabled);
+
+    a.mssLimit = 1460;
+    a.mss = 1460;
+    a.pathMtu = 1500;
+    CHECK(a.SegmentMss() == 1448);
+
+    a.OnPathMtu(576);
+    CHECK(a.pathMtu == 576);
+    CHECK(a.mssLimit == 536);
+    CHECK(a.mss == 536);
+    CHECK(a.SegmentMss() == 524);
+
+    std::size_t got = 0;
+    b.onData = [&](const std::vector<uint8_t> &d) { got += d.size(); };
+    a.SendData(std::vector<uint8_t>(1200, 0x31));
+    e.RunUntil(20000);
+    CHECK(got == 1200);
+
+    a.peerMss = 1460;
+    a.pmtuCeiling = 1500;
+    a.pmtuNextProbe = 0;
+    a.SendData(std::vector<uint8_t>(100, 0x32));
+    e.RunUntil(40000);
+    CHECK(got == 1300);
+    CHECK(a.pathMtu == 1500);
+    CHECK(a.mss == 1460);
+    CHECK(a.SegmentMss() == 1448);
+}
+
 static void TestTcpSack()
 {
     Engine e;
@@ -1868,6 +2053,165 @@ static void TestTcpRetransmit()
     CHECK(a.totalRetransmits > 0);
 }
 
+static void TestTcpCubic()
+{
+    Engine e;
+    TcpConnection a, b;
+    a.SetScheduler(&e);
+    b.SetScheduler(&e);
+    Wire w(&e, &a, &b);
+
+    b.Listen(Ipv4("10.0.0.2"), 80);
+    a.congestion = TcpConnection::Cubic;
+    a.OpenActive(Ipv4("10.0.0.1"), 40000, Ipv4("10.0.0.2"), 80, 1000);
+
+    std::string got;
+    b.onData = [&](const std::vector<uint8_t> &d) {
+        got.append(reinterpret_cast<const char *>(d.data()), d.size());
+    };
+
+    e.RunUntil(1000);
+    CHECK(a.state == TcpConnection::Established);
+
+    w.dropA = true;
+    a.SendData({ 'c', 'u', 'b', 'i', 'c' });
+    e.RunUntil(10000);
+
+    CHECK(got == "cubic");
+    CHECK(a.totalRetransmits > 0);
+    CHECK(a.cubicWMax > 0.0);
+}
+
+static void TestTcpTlp()
+{
+    Engine e;
+    TcpConnection a, b;
+    a.SetScheduler(&e);
+    b.SetScheduler(&e);
+    Wire w(&e, &a, &b);
+
+    b.Listen(Ipv4("10.0.0.2"), 80);
+    a.tlpEnabled = true;
+    a.OpenActive(Ipv4("10.0.0.1"), 40000, Ipv4("10.0.0.2"), 80, 1000);
+
+    std::string got;
+    b.onData = [&](const std::vector<uint8_t> &d) {
+        got.append(reinterpret_cast<const char *>(d.data()), d.size());
+    };
+
+    e.RunUntil(1000);
+    CHECK(a.state == TcpConnection::Established);
+
+    w.dropA = true;
+    a.SendData({ 't', 'l', 'p' });
+    e.RunUntil(10000);
+
+    CHECK(got == "tlp");
+    CHECK(a.tlpProbes > 0);
+}
+
+static void TestTcpPrr()
+{
+    Engine e;
+    TcpConnection a, b;
+    a.SetScheduler(&e);
+    b.SetScheduler(&e);
+    Wire w(&e, &a, &b);
+
+    b.Listen(Ipv4("10.0.0.2"), 80);
+    a.prrEnabled = true;
+    a.OpenActive(Ipv4("10.0.0.1"), 40000, Ipv4("10.0.0.2"), 80, 1000);
+
+    std::string got;
+    b.onData = [&](const std::vector<uint8_t> &d) {
+        got.append(reinterpret_cast<const char *>(d.data()), d.size());
+    };
+
+    e.RunUntil(1000);
+    CHECK(a.state == TcpConnection::Established);
+
+    std::vector<uint8_t> data(5000, 'p');
+    a.cwnd = 6000;
+    w.dropA = true;
+    a.SendData(data);
+    e.RunUntil(20000);
+
+    CHECK(got.size() == data.size());
+    CHECK(a.prrAcked > 0);
+}
+
+static void TestTcpRack()
+{
+    Engine e;
+    TcpConnection a, b;
+    a.SetScheduler(&e);
+    b.SetScheduler(&e);
+    Wire w(&e, &a, &b);
+
+    b.Listen(Ipv4("10.0.0.2"), 80);
+    a.rackEnabled = true;
+    a.OpenActive(Ipv4("10.0.0.1"), 40000, Ipv4("10.0.0.2"), 80, 1000);
+
+    std::string got;
+    b.onData = [&](const std::vector<uint8_t> &d) {
+        got.append(reinterpret_cast<const char *>(d.data()), d.size());
+    };
+
+    e.RunUntil(1000);
+    CHECK(a.state == TcpConnection::Established);
+
+    std::vector<uint8_t> data(5000, 'r');
+    a.cwnd = 6000;
+    a.rackRtt = 1;
+    w.dropA = true;
+    a.SendData(data);
+    e.RunUntil(20000);
+
+    CHECK(got.size() == data.size());
+    CHECK(a.rackRetransmits > 0);
+}
+
+static void TestTcpPacing()
+{
+    Engine e;
+    TcpConnection a, b;
+    a.SetScheduler(&e);
+    b.SetScheduler(&e);
+    Wire w(&e, &a, &b);
+
+    b.Listen(Ipv4("10.0.0.2"), 80);
+    a.pacingEnabled = true;
+    a.OpenActive(Ipv4("10.0.0.1"), 40000, Ipv4("10.0.0.2"), 80, 1000);
+
+    std::size_t got = 0;
+    b.onData = [&](const std::vector<uint8_t> &d) { got += d.size(); };
+
+    e.RunUntil(1000);
+    CHECK(a.state == TcpConnection::Established);
+
+    std::vector<uint8_t> data(5000, 'p');
+    a.SendData(data);
+    e.RunUntil(200000);
+    CHECK(got == data.size());
+}
+
+static void TestTcpEcn()
+{
+    Engine e;
+    TcpConnection a, b;
+    a.SetScheduler(&e);
+    b.SetScheduler(&e);
+    Wire w(&e, &a, &b);
+
+    b.Listen(Ipv4("10.0.0.2"), 80);
+    a.OpenActive(Ipv4("10.0.0.1"), 40000, Ipv4("10.0.0.2"), 80, 1000);
+    e.RunUntil(1000);
+
+    CHECK(a.state == TcpConnection::Established);
+    CHECK(a.ecnEnabled);
+    CHECK(b.ecnEnabled);
+}
+
 int main()
 {
     TestIpv4();
@@ -1884,12 +2228,14 @@ int main()
     TestMessagesExtra();
     TestEngineBasics();
     TestTopologyBuilder();
+    TestDropReasons();
     TestPingEndToEnd();
     TestRouteEndToEnd();
     TestIcmpErrors();
     TestPcapCaps();
     TestJsonRoundTrip();
     TestCommandRunner();
+    TestStateIpv6();
     TestExport();
     TestTraceroute();
     TestUdp();
@@ -1899,6 +2245,7 @@ int main()
     TestDhcpMessage();
     TestDnsMessage();
     TestIpv6();
+    TestIpv6Packet();
     TestHmacTsig();
     TestRipMessage();
     TestOspfPacket();
@@ -1909,7 +2256,14 @@ int main()
     TestTcpEcho();
     TestAcl();
     TestTcpCore();
+    TestTcpPathMtu();
     TestTcpRetransmit();
+    TestTcpCubic();
+    TestTcpTlp();
+    TestTcpPrr();
+    TestTcpRack();
+    TestTcpPacing();
+    TestTcpEcn();
     TestTcpSack();
     TestTcpRttReset();
     TestTcpDsack();

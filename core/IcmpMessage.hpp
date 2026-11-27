@@ -10,11 +10,13 @@ struct IcmpMessage
     static constexpr uint8_t kEchoReply = 0;
     static constexpr uint8_t kDestUnreachable = 3;
     static constexpr uint8_t kTimeExceeded = 11;
+    static constexpr uint8_t kFragNeeded = 4;
 
     uint8_t type = kEchoRequest;
     uint8_t code = 0;
     uint16_t id = 0;
     uint16_t seq = 0;
+    uint16_t nextHopMtu = 0;
     std::vector<uint8_t> payload;
 
     std::vector<uint8_t> ToBytes() const;

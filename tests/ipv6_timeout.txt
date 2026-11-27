@@ -1,0 +1,9 @@
+add-device PC1 end
+add-device PC2 end
+add-port PC1 aa:aa:aa:aa:aa:01
+add-port PC2 aa:aa:aa:aa:aa:02
+connect PC1:0 PC2:0
+set-ip6 PC1:0 2001:db8::1/64
+set-ip6 PC2:0 2001:db8::2/64
+ping6 PC1 2001:db8::99
+run 200

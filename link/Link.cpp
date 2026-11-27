@@ -2,9 +2,11 @@
 #include "../device/Port.hpp"
 #include "../device/Device.hpp"
 #include "../device/FrameDelivery.hpp"
+#include "../core/IpPacket.hpp"
 #include "../engine/Scheduler.hpp"
 #include <memory>
 #include <utility>
+#include <cstddef>
 
 void Link::SetScheduler(Scheduler *s){ scheduler = s;}
 
@@ -48,7 +50,11 @@ void Link::SetUp(bool up)
 
 void Link::Transmit(Port *from, FramePtr frame)
 {
-    if(!enabled) return;
+    if(!enabled)
+    {
+        from->CountDrop(DropReason::LinkDown);
+        return;
+    }
 
     Port *to = Other(from);
     if(to == nullptr) return;
@@ -60,7 +66,7 @@ void Link::Transmit(Port *from, FramePtr frame)
         std::uniform_real_distribution<double> dist(0.0, 100.0);
         if(dist(rng) < lossPct)
         {
-            ++from->drop;
+            from->CountDrop(DropReason::Loss);
             return;
         }
     }
@@ -72,25 +78,74 @@ void Link::Transmit(Port *from, FramePtr frame)
         extra = dist(rng);
     }
 
-    if(scheduler != nullptr)
-        scheduler->TapFrame(scheduler->Now(), *frame);
-
-    auto deliver = [&]() {
+    auto deliver = [&](const FramePtr &f) {
         if(scheduler != nullptr)
             scheduler->ScheduleAfter(delay + extra,
-                std::make_unique<FrameDelivery>(to, frame));
+                std::make_unique<FrameDelivery>(to, f));
         else
-            to->Receive(frame);
+            to->Receive(f);
     };
 
-    deliver();
+    auto sendFrame = [&](const FramePtr &f) {
+        if(scheduler != nullptr)
+            scheduler->TapFrame(scheduler->Now(), *f);
+        deliver(f);
+        if(dupPct > 0.0)
+        {
+            std::uniform_real_distribution<double> dist(0.0, 100.0);
+            if(dist(rng) < dupPct)
+                deliver(f);
+        }
+    };
 
-    if(dupPct > 0.0)
+    if(frame->type == EthernetFrame::kIPv4 && mtu > IpPacket::kHeaderSize)
     {
-        std::uniform_real_distribution<double> dist(0.0, 100.0);
-        if(dist(rng) < dupPct)
-            deliver();
+        IpPacket pkt;
+        if(IpPacket::TryFromBytes(frame->payload, pkt) &&
+           pkt.dontFragment &&
+           frame->payload.size() > mtu)
+        {
+            from->CountDrop(DropReason::Mtu);
+            return;
+        }
+        if(IpPacket::TryFromBytes(frame->payload, pkt) &&
+           !pkt.IsFragment() &&
+           frame->payload.size() > mtu)
+        {
+            std::size_t maxPayload = (std::size_t(mtu) - IpPacket::kHeaderSize) &
+                                     ~std::size_t(7);
+            if(maxPayload >= 8)
+            {
+                uint16_t id = ++ipIdCounter;
+                if(id == 0)
+                    id = ++ipIdCounter;
+                std::size_t total = pkt.payload.size();
+                for(std::size_t offset = 0; offset < total; offset += maxPayload)
+                {
+                    std::size_t len = total - offset;
+                    if(len > maxPayload)
+                        len = maxPayload;
+                    std::vector<uint8_t> chunk(
+                        pkt.payload.begin() + std::ptrdiff_t(offset),
+                        pkt.payload.begin() + std::ptrdiff_t(offset + len));
+                    IpPacket frag(pkt.srcIp, pkt.dstIp, pkt.protocol,
+                                  std::move(chunk));
+                    frag.ttl = pkt.ttl;
+                    frag.ecn = pkt.ecn;
+                    frag.identification = id;
+                    frag.fragmentOffset = uint16_t(offset / 8);
+                    frag.moreFragments = offset + len < total;
+
+                    EthernetFrame out = *frame;
+                    out.payload = frag.ToBytes();
+                    sendFrame(std::make_shared<const EthernetFrame>(out));
+                }
+                return;
+            }
+        }
     }
+
+    sendFrame(frame);
 }
 
 Port *Link::Other(Port *from) const

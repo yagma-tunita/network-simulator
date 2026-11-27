@@ -64,6 +64,8 @@ func main() {
 			st.Frames, st.IPv4, st.TCPSegments, st.TCPFlows, st.OSPF, st.OSPFLSAs)
 		fmt.Printf("syn_options: mss=%d ws=%d sack=%d ts=%d\n",
 			st.SYNWithMSS, st.SYNWithWS, st.SYNWithSACK, st.SYNWithTS)
+		fmt.Printf("tcp_data: segments=%d repeat_seq=%d sack_blocks=%d ecn=%d ce=%d df=%d\n",
+			st.TCPData, st.TCPRetrans, st.TCPSACK, st.TCPECN, st.TCPCE, st.TCPDF)
 	}
 	for _, is := range st.Issues {
 		fmt.Printf("frame %d %s: %s\n", is.Frame, is.Proto, is.Text)

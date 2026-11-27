@@ -3,8 +3,10 @@
 #include "Device.hpp"
 #include "ArpAgent.hpp"
 #include "../core/Ipv4.hpp"
+#include "../core/Ipv6.hpp"
 #include "../core/Mac.hpp"
 #include "../core/IpPacket.hpp"
+#include "../core/Icmpv6Message.hpp"
 #include "../core/DhcpMessage.hpp"
 #include "../core/DnsMessage.hpp"
 #include "../core/UdpDatagram.hpp"
@@ -16,6 +18,8 @@
 #include <utility>
 #include <list>
 #include <deque>
+#include <tuple>
+#include <functional>
 #include <memory>
 #include <vector>
 #include <string>
@@ -47,6 +51,8 @@ struct EndDevice : Device
 
     Ipv4 gateway;
     bool hasGateway = false;
+    Ipv6 gateway6;
+    bool hasGateway6 = false;
 
     bool udpEchoEnabled = false;
     uint16_t udpEchoPort = 7;
@@ -73,14 +79,47 @@ struct EndDevice : Device
     uint32_t tcpSrvAck = 0;
     bool tcpSrvActive = false;
 
-    std::deque<TcpConnection> tcpConns;
+    std::list<TcpConnection> tcpConns;
+    TcpConnection *tcpLastConn = nullptr;
+
+    using TcpConnKey = std::tuple<uint16_t, uint32_t, uint16_t>;
+    struct TcpConnKeyHash
+    {
+        std::size_t operator()(const TcpConnKey &k) const
+        {
+            std::size_t h = std::hash<uint32_t>{}(std::get<1>(k));
+            h ^= std::size_t(std::get<0>(k)) + 0x9e3779b9u + (h << 6) +
+                 (h >> 2);
+            h ^= std::size_t(std::get<2>(k)) + 0x9e3779b9u + (h << 6) +
+                 (h >> 2);
+            return h;
+        }
+    };
+    std::unordered_map<TcpConnKey, TcpConnection *, TcpConnKeyHash>
+        tcpConnIndex;
+    void IndexTcpConn(TcpConnection &conn);
     bool tcpListenEnabled = false;
     uint16_t tcpListenPort = 0;
-    uint16_t nextTcpLocalPort = 40000;
+    uint16_t tcpPortMin = 40000;
+    uint16_t tcpPortMax = 65535;
+    uint16_t tcpPortCursor = 40000;
+    uint16_t AllocateTcpLocalPort();
+    uint16_t TcpMssLimit(Port *port) const;
+    void SetTcpPortRange(uint16_t minimum, uint16_t maximum)
+    {
+        tcpPortMin = minimum;
+        tcpPortMax = maximum;
+        tcpPortCursor = minimum;
+    }
     bool tcpKeepalive = false;
     uint64_t tcpKeepIdle = 300;
     uint64_t tcpKeepInterval = 75;
     uint8_t tcpKeepCount = 3;
+    TcpConnection::CongestionControl tcpCongestion = TcpConnection::Reno;
+    bool tcpTlp = true;
+    bool tcpPrr = true;
+    bool tcpRack = true;
+    bool tcpPacing = false;
     uint64_t tcpAccepted = 0;
     uint64_t tcpDropped = 0;
     uint64_t tcpResetsSent = 0;
@@ -265,30 +304,80 @@ struct EndDevice : Device
 
     std::map<uint16_t, PingOutstanding> outstanding;
     std::vector<PendingPing> pendingPings;
+    std::unordered_map<uint32_t, uint32_t> pendingArpCounts;
+    void NotePendingArp(const Ipv4 &nextHop)
+    {
+        ++pendingArpCounts[nextHop.value];
+    }
+    void DropPendingArp(const Ipv4 &nextHop)
+    {
+        auto it = pendingArpCounts.find(nextHop.value);
+        if(it == pendingArpCounts.end())
+            return;
+        if(--it->second == 0)
+            pendingArpCounts.erase(it);
+    }
     uint16_t nextPingSeq = 0;
     uint64_t droppedPending = 0;
+    std::map<Ipv6, Mac> ndCache;
+    struct PendingPing6
+    {
+        Ipv6 target;
+        Ipv6 nextHop;
+        Port *egress = nullptr;
+        uint16_t seq = 0;
+        uint8_t hopLimit = 64;
+    };
+    std::map<Ipv6, std::vector<PendingPing6>> pendingPing6;
+    struct Ping6Outstanding
+    {
+        Ipv6 target;
+        uint64_t sentAt = 0;
+        bool sent = false;
+    };
+    std::map<uint16_t, Ping6Outstanding> outstanding6;
 
     std::map<uint16_t, uint8_t> traceHops;
     Ipv4 traceTarget;
     uint8_t traceTtl = 0;
     uint8_t traceMaxHops = 0;
     bool traceActive = false;
+    std::map<uint16_t, uint8_t> traceHops6;
+    Ipv6 traceTarget6;
+    uint8_t traceTtl6 = 0;
+    uint8_t traceMaxHops6 = 0;
+    bool traceActive6 = false;
 
     void OnFrame(Port *port, FramePtr frame) override;
     void SetClock(Clock *c) override;
     void SetGateway(const Ipv4 &gw) { gateway = gw; hasGateway = true; }
+    void SetGateway6(const Ipv6 &gw) { gateway6 = gw; hasGateway6 = true; }
     void SendArpRequest(Ipv4 targetIp);
     bool Lookup(Ipv4 ip, Mac &outMac);
+    bool ResolveNextHop6(const Ipv6 &target, Port *&egress, Ipv6 &nextHop);
     void SendPing(Ipv4 targetIp, uint16_t seq = 0, uint8_t ttl = IpPacket::kDefaultTtl);
+    void SetIpv6(Port *port, const Ipv6 &addr);
+    void Ping6(const Ipv6 &targetIp);
+    void Traceroute6(const Ipv6 &targetIp, uint8_t maxHops = 30);
     void SendUdp(Ipv4 targetIp, uint16_t dstPort, const std::string &payload,
-                 uint16_t srcPort = 0);
+                 uint16_t srcPort = 0, bool dontFragment = false);
     void SetUdpEcho(bool on, uint16_t port = 7);
     void SetTcpEcho(bool on, uint16_t port = 0);
     void TcpEchoClient(Ipv4 targetIp, uint16_t dstPort, const std::string &text);
     void SetTcpListen(bool on, uint16_t port = 0);
     void SetTcpKeepalive(bool on, uint64_t idle = 300, uint64_t interval = 75,
                          uint8_t count = 3);
+    void SetTcpCongestion(TcpConnection::CongestionControl cc)
+    {
+        tcpCongestion = cc;
+    }
+    void SetTcpTlp(bool on) { tcpTlp = on; }
+    void SetTcpPrr(bool on) { tcpPrr = on; }
+    void SetTcpRack(bool on) { tcpRack = on; }
+    void SetTcpPacing(bool on) { tcpPacing = on; }
     void TcpConnect(Ipv4 targetIp, uint16_t dstPort, const std::string &text);
+    void TcpSend(const std::string &text);
+    TcpConnection &NewTcpConnection();
     bool HandleTcpStack(Port *port, const IpPacket &pkt, const Mac &srcMac);
     void SendTcpSegment(TcpConnection &conn, const TcpSegment &seg);
     TcpConnection *FindTcpConn(uint16_t localPort, Ipv4 remote, uint16_t remotePort);
@@ -443,8 +532,17 @@ struct EndDevice : Device
     void ScheduleNextTrace();
     void AdvanceTrace();
     void HandleIp(Port *port, FramePtr frame);
+    void HandleIpv6(Port *port, FramePtr frame);
+    void SendIpv6(Port *egress, const Ipv6 &dstIp, const Mac &dstMac,
+                  const Icmpv6Message &msg, uint8_t hopLimit = 64);
+    void SendEcho6(Port *egress, const Ipv6 &targetIp, const Ipv6 &nextHop,
+                   uint16_t seq, uint8_t hopLimit = 64);
+    void SendTrace6Probe();
+    void ScheduleNextTrace6();
+    void AdvanceTrace6();
     void FlushPending();
     void OnPingTimeout(uint16_t seq);
+    void OnPing6Timeout(uint16_t seq);
 
     EndDevice() = default;
 };

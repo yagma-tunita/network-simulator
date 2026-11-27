@@ -1,0 +1,6 @@
+add-device R1 router
+add-port R1 aa:00:00:00:00:01 10.0.0.1/24
+ospf-router-id R1 1.1.1.1
+ospf R1 on
+ospf-status R1
+run 20

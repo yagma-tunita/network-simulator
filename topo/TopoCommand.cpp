@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <utility>
 #include <iostream>
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -270,6 +271,21 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
         Ipv4 nextHop(t[3]);
         topo.AddRoute(t[1], dst, nextHop);
     }
+    else if (cmd == "add-route6")
+    {
+        if (t.size() != 4)
+            throw std::invalid_argument("add-route6 <router> <dst6/prefix> <next-hop-ip6>");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        Ipv6Subnet dst;
+        Ipv6 nextHop;
+        if (!Ipv6Subnet::TryParse(t[2], dst))
+            throw std::invalid_argument("invalid IPv6 destination");
+        if (!Ipv6::TryParse(t[3], nextHop))
+            throw std::invalid_argument("invalid IPv6 next hop");
+        r->AddRoute6(dst, nextHop, false);
+    }
     else if (cmd == "set-vlan")
     {
         if (t.size() != 3)
@@ -319,6 +335,18 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
             throw std::invalid_argument("'" + t[1] + "' is not an end device");
         e->SetGateway(Ipv4(t[2]));
     }
+    else if (cmd == "set-gateway6")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("set-gateway6 <device> <gw-ipv6>");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        Ipv6 gw;
+        if (!Ipv6::TryParse(t[2], gw))
+            throw std::invalid_argument("invalid IPv6 gateway");
+        e->SetGateway6(gw);
+    }
     else if (cmd == "ping")
     {
         if (t.size() != 3 && t.size() != 4)
@@ -337,6 +365,18 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
             ttl = uint8_t(x);
         }
         e->SendPing(Ipv4(t[2]), 0, ttl);
+    }
+    else if (cmd == "ping6")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("ping6 <device> <ipv6>");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        Ipv6 target;
+        if (!Ipv6::TryParse(t[2], target))
+            throw std::invalid_argument("invalid IPv6 address");
+        e->Ping6(target);
     }
     else if (cmd == "set-stp")
     {
@@ -372,6 +412,33 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
             throw std::invalid_argument("set-stp-mode <switch> stp|rstp");
         sw->SetStpRapid(t[2] == "rstp");
     }
+    else if (cmd == "span")
+    {
+        if (t.size() == 3 && t[2] == "off")
+        {
+            Switch *sw = dynamic_cast<Switch *>(topo.FindDevice(t[1]));
+            if (!sw)
+                throw std::invalid_argument("'" + t[1] + "' is not a switch");
+            sw->SetSpan(nullptr, nullptr);
+            return;
+        }
+        if (t.size() != 4)
+            throw std::invalid_argument("span <switch> <src-dev:idx> <dst-dev:idx> | off");
+        Switch *sw = dynamic_cast<Switch *>(topo.FindDevice(t[1]));
+        if (!sw)
+            throw std::invalid_argument("'" + t[1] + "' is not a switch");
+        auto src = ParsePortRef(t[2]);
+        auto dst = ParsePortRef(t[3]);
+        if (src.first != t[1] || dst.first != t[1])
+            throw std::invalid_argument("span ports must belong to the switch");
+        if (src.second >= sw->portList.size() ||
+            dst.second >= sw->portList.size())
+            throw std::invalid_argument("span port index out of range");
+        if (src.second == dst.second)
+            throw std::invalid_argument("span source and destination must differ");
+        sw->SetSpan(sw->portList[src.second], sw->portList[dst.second]);
+        std::cout << "span configured\n";
+    }
     else if (cmd == "stp-status")
     {
         if (t.size() != 2)
@@ -385,7 +452,7 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
     else if (cmd == "set-link")
     {
         if (t.size() < 3)
-            throw std::invalid_argument("set-link <dev:idx> down|up|loss|dup|jitter|clear ...");
+            throw std::invalid_argument("set-link <dev:idx> down|up|loss|dup|jitter|mtu|clear ...");
 
         auto ref = ParsePortRef(t[1]);
         Port *p = topo.FindPort(ref.first, ref.second);
@@ -404,10 +471,19 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
                 throw std::invalid_argument("set-link <dev:idx> clear");
             p->link->ClearImpair();
         }
-        else if (t[2] == "loss" || t[2] == "dup" || t[2] == "jitter")
+        else if (t[2] == "loss" || t[2] == "dup" || t[2] == "jitter" ||
+                 t[2] == "mtu")
         {
             if (t.size() != 4)
-                throw std::invalid_argument("set-link <dev:idx> loss|dup|jitter <value>");
+                throw std::invalid_argument("set-link <dev:idx> loss|dup|jitter|mtu <value>");
+            if (t[2] == "mtu")
+            {
+                unsigned mtu = std::stoul(t[3]);
+                if (mtu < 576 || mtu > 1500)
+                    throw std::invalid_argument("link mtu must be 576..1500");
+                p->link->SetMtu(uint16_t(mtu));
+                return;
+            }
             if (t[2] == "jitter")
             {
                 p->link->SetJitter(uint64_t(std::stoull(t[3])));
@@ -423,7 +499,7 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
         }
         else
         {
-            throw std::invalid_argument("set-link <dev:idx> down|up|loss|dup|jitter|clear");
+            throw std::invalid_argument("set-link <dev:idx> down|up|loss|dup|jitter|mtu|clear");
         }
     }
     else if (cmd == "stats")
@@ -437,6 +513,28 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
             Port *p = d->portList[i];
             std::cout << "  p" << i << " rx=" << p->rx << " tx=" << p->tx
                       << " drop=" << p->drop << "\n";
+        }
+    }
+    else if (cmd == "drop-stats")
+    {
+        if (t.size() != 2)
+            throw std::invalid_argument("drop-stats <device>");
+        Device *d = topo.FindDevice(t[1]);
+        if (!d)
+            throw std::invalid_argument("unknown device '" + t[1] + "'");
+        std::cout << t[1] << "\n";
+        for (std::size_t i = 0; i < d->portList.size(); ++i)
+        {
+            Port *p = d->portList[i];
+            std::cout << "  p" << i << " total=" << p->drop;
+            for (std::size_t r = 1; r < DropReasonCount; ++r)
+            {
+                if (p->dropByReason[r] == 0)
+                    continue;
+                std::cout << " " << DropReasonName(static_cast<DropReason>(r))
+                          << "=" << p->dropByReason[r];
+            }
+            std::cout << "\n";
         }
     }
     else if (cmd == "remove-device")
@@ -475,6 +573,47 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
         ParseIpPrefix(t[2], ip, prefix);
         topo.SetPortIp(ref.first, ref.second, ip, prefix);
     }
+    else if (cmd == "set-ip6")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("set-ip6 <dev:idx> <ipv6>");
+        auto ref = ParsePortRef(t[1]);
+        Port *p = topo.FindPort(ref.first, ref.second);
+        if (!p)
+            throw std::invalid_argument("'" + t[1] + "' is not a port");
+        std::string text = t[2];
+        std::size_t slash = text.find('/');
+        Ipv6 ip;
+        unsigned prefix = 64;
+        if (slash == std::string::npos)
+        {
+            if (!Ipv6::TryParse(text, ip))
+                throw std::invalid_argument("invalid IPv6 address");
+        }
+        else
+        {
+            if (!Ipv6::TryParse(text.substr(0, slash), ip))
+                throw std::invalid_argument("invalid IPv6 address");
+            std::string ps = text.substr(slash + 1);
+            if (ps.empty() || ps.size() > 3)
+                throw std::invalid_argument("invalid IPv6 prefix");
+            prefix = 0;
+            for (char c : ps)
+            {
+                if (c < '0' || c > '9')
+                    throw std::invalid_argument("invalid IPv6 prefix");
+                prefix = prefix * 10 + unsigned(c - '0');
+            }
+            if (prefix > 128)
+                throw std::invalid_argument("invalid IPv6 prefix");
+        }
+        p->hasIp6 = true;
+        p->ip6 = ip;
+        p->prefix6 = uint8_t(prefix);
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(ref.first));
+        if (r)
+            r->RebuildConnected6();
+    }
     else if (cmd == "devices")
     {
         if (t.size() != 1)
@@ -500,6 +639,9 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
                       << " ip=" << (p->hasIp
                             ? p->ip.ToString() + "/" + std::to_string(p->subnet.prefix)
                             : std::string("-"))
+                      << " ip6=" << (p->hasIp6
+                            ? p->ip6.ToString() + "/" + std::to_string(p->prefix6)
+                            : std::string("-"))
                       << " vlan=" << p->vlan << (p->tagged ? " T" : "")
                       << " stp=" << PortState(p)
                       << " rx=" << p->rx << " tx=" << p->tx
@@ -518,6 +660,43 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
             std::cout << "  " << rt.dst.ToString() << " -> "
                       << (rt.direct ? std::string("direct") : rt.nextHop.ToString())
                       << "\n";
+    }
+    else if (cmd == "routes6")
+    {
+        if (t.size() != 2)
+            throw std::invalid_argument("routes6 <router>");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        std::cout << t[1] << " routes6:\n";
+        for (const Ipv6Route &rt : r->route6)
+            std::cout << "  " << rt.dst.ToString() << " -> "
+                      << (rt.direct ? std::string("direct") : rt.nextHop.ToString())
+                      << "\n";
+    }
+    else if (cmd == "nd6-table")
+    {
+        if (t.size() != 2)
+            throw std::invalid_argument("nd6-table <device>");
+        Device *d = topo.FindDevice(t[1]);
+        if (!d)
+            throw std::invalid_argument("unknown device '" + t[1] + "'");
+        std::cout << t[1] << " nd6:\n";
+        EndDevice *e = dynamic_cast<EndDevice *>(d);
+        if (e)
+        {
+            for (const auto &kv : e->ndCache)
+                std::cout << "  " << kv.first.ToString() << " -> "
+                          << kv.second.ToString() << "\n";
+        }
+        else
+        {
+            Router *r = dynamic_cast<Router *>(d);
+            if (r)
+                for (const auto &kv : r->nd6Cache)
+                    std::cout << "  " << kv.first.ToString() << " -> "
+                              << kv.second.ToString() << "\n";
+        }
     }
     else if (cmd == "arp-table")
     {
@@ -547,14 +726,28 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
             throw std::invalid_argument("'" + t[1] + "' is not a switch");
         uint64_t now = sw->clock ? sw->clock->Now() : 0;
         std::cout << t[1] << " mac-table:\n";
+        std::vector<std::pair<uint16_t, Mac>> keys;
+        keys.reserve(sw->macTable.size());
         for (const auto &kv : sw->macTable)
+            keys.push_back(kv.first);
+        std::sort(keys.begin(), keys.end(),
+                  [](const std::pair<uint16_t, Mac> &a,
+                     const std::pair<uint16_t, Mac> &b)
+                  {
+                      if (a.first != b.first) return a.first < b.first;
+                      return a.second < b.second;
+                  });
+        for (const auto &key : keys)
         {
+            const auto entry = sw->macTable.find(key);
+            if (entry == sw->macTable.end())
+                continue;
             std::size_t idx = 0;
             for (std::size_t i = 0; i < sw->portList.size(); ++i)
-                if (sw->portList[i] == kv.second.port) { idx = i; break; }
-            uint64_t age = now >= kv.second.lastSeen ? now - kv.second.lastSeen : 0;
-            std::cout << "  vlan=" << kv.first.first << " "
-                      << kv.first.second.ToString() << " -> p" << idx
+                if (sw->portList[i] == entry->second.port) { idx = i; break; }
+            uint64_t age = now >= entry->second.lastSeen ? now - entry->second.lastSeen : 0;
+            std::cout << "  vlan=" << key.first << " "
+                      << key.second.ToString() << " -> p" << idx
                       << " age=" << age << "\n";
         }
     }
@@ -598,6 +791,25 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
         }
         e->Traceroute(Ipv4(t[2]), uint8_t(maxHops));
     }
+    else if (cmd == "traceroute6")
+    {
+        if (t.size() != 3 && t.size() != 4)
+            throw std::invalid_argument("traceroute6 <device> <ipv6> [max-hops]");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        Ipv6 target;
+        if (!Ipv6::TryParse(t[2], target))
+            throw std::invalid_argument("invalid IPv6 address");
+        unsigned maxHops = 30;
+        if (t.size() == 4)
+        {
+            maxHops = std::stoul(t[3]);
+            if (maxHops == 0 || maxHops > 255)
+                throw std::invalid_argument("max-hops out of range");
+        }
+        e->Traceroute6(target, uint8_t(maxHops));
+    }
     else if (cmd == "export")
     {
         if (t.size() != 3)
@@ -632,20 +844,22 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
     else if (cmd == "udp-send")
     {
         if (t.size() < 4)
-            throw std::invalid_argument("udp-send <device> <ip> <dport> <text...>");
+            throw std::invalid_argument("udp-send <device> <ip> <dport> [df] <text...>");
         EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
         if (!e)
             throw std::invalid_argument("'" + t[1] + "' is not an end device");
         unsigned dport = std::stoul(t[3]);
         if (dport == 0 || dport > 65535)
             throw std::invalid_argument("udp port out of range");
+        bool df = t.size() > 4 && t[4] == "df";
+        std::size_t first = df ? 5 : 4;
         std::string text;
-        for (std::size_t i = 4; i < t.size(); ++i)
+        for (std::size_t i = first; i < t.size(); ++i)
         {
-            if (i > 4) text += " ";
+            if (i > first) text += " ";
             text += t[i];
         }
-        e->SendUdp(Ipv4(t[2]), uint16_t(dport), text);
+        e->SendUdp(Ipv4(t[2]), uint16_t(dport), text, 0, df);
     }
     else if (cmd == "map")
     {
@@ -787,6 +1001,77 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
             throw std::invalid_argument("tcp-backlog must be 1..1024");
         e->tcpBacklog = n;
     }
+    else if (cmd == "tcp-congestion")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("tcp-congestion <device> reno|cubic");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        if (t[2] == "reno")
+            e->SetTcpCongestion(TcpConnection::Reno);
+        else if (t[2] == "cubic")
+            e->SetTcpCongestion(TcpConnection::Cubic);
+        else
+            throw std::invalid_argument("tcp-congestion must be reno or cubic");
+    }
+    else if (cmd == "tcp-tlp")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("tcp-tlp <device> on|off");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        if (t[2] != "on" && t[2] != "off")
+            throw std::invalid_argument("tcp-tlp <device> on|off");
+        e->SetTcpTlp(t[2] == "on");
+    }
+    else if (cmd == "tcp-prr")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("tcp-prr <device> on|off");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        if (t[2] != "on" && t[2] != "off")
+            throw std::invalid_argument("tcp-prr <device> on|off");
+        e->SetTcpPrr(t[2] == "on");
+    }
+    else if (cmd == "tcp-rack")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("tcp-rack <device> on|off");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        if (t[2] != "on" && t[2] != "off")
+            throw std::invalid_argument("tcp-rack <device> on|off");
+        e->SetTcpRack(t[2] == "on");
+    }
+    else if (cmd == "tcp-pacing")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("tcp-pacing <device> on|off");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        if (t[2] != "on" && t[2] != "off")
+            throw std::invalid_argument("tcp-pacing <device> on|off");
+        e->SetTcpPacing(t[2] == "on");
+    }
+    else if (cmd == "tcp-port-range")
+    {
+        if (t.size() != 4)
+            throw std::invalid_argument("tcp-port-range <device> <min> <max>");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        unsigned minimum = std::stoul(t[2]);
+        unsigned maximum = std::stoul(t[3]);
+        if (minimum < 1024 || maximum > 65535 || minimum > maximum)
+            throw std::invalid_argument("tcp port range must satisfy 1024 <= min <= max <= 65535");
+        e->SetTcpPortRange(uint16_t(minimum), uint16_t(maximum));
+    }
     else if (cmd == "tcp-status")
     {
         if (t.size() != 2)
@@ -795,6 +1080,7 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
         if (!e)
             throw std::invalid_argument("'" + t[1] + "' is not an end device");
 
+        e->CleanupTcpConns();
         std::cout << "tcp " << t[1] << ": conns=" << e->tcpConns.size()
                   << " accepted=" << e->tcpAccepted
                   << " dropped=" << e->tcpDropped
@@ -809,11 +1095,15 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
                       << " -> " << c.remoteIp.ToString() << ":" << c.remotePort
                       << " state=" << TcpStateName(c.state)
                       << " rto=" << c.rto
+                      << " mss=" << c.mss
+                      << " pmtu=" << c.pathMtu
                       << " cwnd=" << c.cwnd
                       << " wnd=" << c.sndWnd
                       << " unacked=" << c.unacked.size()
                       << " retrans=" << c.totalRetransmits
-                      << " dsack=" << c.dsacks << "\n";
+                      << " dsack=" << c.dsacks
+                      << " ecn=" << (c.ecnEnabled ? "on" : "off")
+                      << " ce=" << c.ecnCePackets << "\n";
     }
     else if (cmd == "tcp-connect")
     {
@@ -832,6 +1122,21 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
             text += t[i];
         }
         e->TcpConnect(Ipv4(t[2]), uint16_t(port), text);
+    }
+    else if (cmd == "tcp-send")
+    {
+        if (t.size() < 2)
+            throw std::invalid_argument("tcp-send <device> <text...>");
+        EndDevice *e = dynamic_cast<EndDevice *>(topo.FindDevice(t[1]));
+        if (!e)
+            throw std::invalid_argument("'" + t[1] + "' is not an end device");
+        std::string text;
+        for (std::size_t i = 2; i < t.size(); ++i)
+        {
+            if (i > 2) text += " ";
+            text += t[i];
+        }
+        e->TcpSend(text);
     }
     else if (cmd == "dhcp-server")
     {
@@ -913,6 +1218,20 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
             return;
         }
         r->SetDhcpRelay(p, true, Ipv4(t[3]));
+    }
+    else if (cmd == "ecn-mark")
+    {
+        if (t.size() != 4)
+            throw std::invalid_argument("ecn-mark <router> <dev:idx> on|off");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        auto ref = ParsePortRef(t[2]);
+        if (ref.first != t[1] || ref.second >= r->portList.size())
+            throw std::invalid_argument("ecn-mark port must belong to the router");
+        if (t[3] != "on" && t[3] != "off")
+            throw std::invalid_argument("ecn-mark <router> <dev:idx> on|off");
+        r->SetEcnMark(r->portList[ref.second], t[3] == "on");
     }
     else if (cmd == "dns-server")
     {
@@ -1487,6 +1806,20 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
             throw std::invalid_argument("ospf <router> on|off");
         r->SetOspf(t[2] == "on");
     }
+    else if (cmd == "ospf-router-id")
+    {
+        if (t.size() != 3)
+            throw std::invalid_argument("ospf-router-id <router> <id>");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        Ipv4 id(t[2]);
+        if (id.value == 0)
+            throw std::invalid_argument("ospf router-id must be nonzero");
+        r->ospfRouterIdCfg = id.value;
+        if (r->ospfEnabled)
+            r->SetOspf(true);
+    }
     else if (cmd == "ospf-status")
     {
         if (t.size() != 2)
@@ -1527,8 +1860,15 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
 
         for (const auto &ifc : r->ospfIfaces)
         {
-            std::cout << "  iface " << ifc.port->ip.ToString()
-                      << " area=" << ifc.area.ToString()
+            std::cout << "  iface ";
+            if (ifc.virtualLink)
+                std::cout << "vlink(" << Ipv4(ifc.vlinkPeer).ToString()
+                          << ") transit=" << ifc.transitArea.ToString();
+            else if (ifc.port)
+                std::cout << ifc.port->ip.ToString();
+            else
+                std::cout << "-";
+            std::cout << " area=" << ifc.area.ToString()
                       << " state=" << OspfIfName(ifc.state)
                       << " cost=" << ifc.cost
                       << " passive=" << (ifc.passive ? "on" : "off")
@@ -1632,6 +1972,31 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
         r->ospfStubAreas[area.value] = (t[3] == "stub");
         r->ospfNssaAreas[area.value] = (t[3] == "nssa");
     }
+    else if (cmd == "ospf-summary")
+    {
+        if (t.size() != 4 && t.size() != 5)
+            throw std::invalid_argument("ospf-summary <router> <area-id> <prefix> [not-advertise] | clear");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        Ipv4 area(t[2]);
+        if (t[3] == "clear")
+        {
+            if (t.size() != 4)
+                throw std::invalid_argument("ospf-summary <router> <area-id> clear");
+            r->ClearOspfSummaries(area.value);
+            return;
+        }
+        Ipv4Subnet dst(t[3]);
+        bool notAdvertise = false;
+        if (t.size() == 5)
+        {
+            if (t[4] != "not-advertise")
+                throw std::invalid_argument("ospf-summary option must be not-advertise");
+            notAdvertise = true;
+        }
+        r->AddOspfSummary(area.value, dst, notAdvertise);
+    }
     else if (cmd == "ospf-external")
     {
         if (t.size() != 3 && t.size() != 4)
@@ -1651,6 +2016,64 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
         if (metric == 0 || metric > 0xFFFFFFu)
             throw std::invalid_argument("ospf external metric out of range");
         r->AddOspfExternal(dst, metric);
+    }
+    else if (cmd == "ospf-default-originate")
+    {
+        if (t.size() < 3 || t.size() > 5)
+            throw std::invalid_argument("ospf-default-originate <router> on|off [metric] [type1|type2]");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        bool on;
+        if (t[2] == "on") on = true;
+        else if (t[2] == "off") on = false;
+        else throw std::invalid_argument("ospf-default-originate state must be on or off");
+        if (!on && t.size() != 3)
+            throw std::invalid_argument("ospf-default-originate <router> off");
+        unsigned metric = 20;
+        bool type2 = true;
+        if (t.size() >= 4)
+        {
+            metric = std::stoul(t[3]);
+            if (metric == 0 || metric > 0xFFFFFFu)
+                throw std::invalid_argument("ospf default metric out of range");
+        }
+        if (t.size() == 5)
+        {
+            if (t[4] == "type2") type2 = true;
+            else if (t[4] == "type1") type2 = false;
+            else throw std::invalid_argument("ospf default type must be type1 or type2");
+        }
+        r->SetOspfDefaultOriginate(on, metric, type2);
+    }
+    else if (cmd == "ospf-redistribute")
+    {
+        if (t.size() < 3 || t.size() > 5)
+            throw std::invalid_argument("ospf-redistribute <router> connected|static|off [metric] [type1|type2]");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        bool connected = r->ospfRedistConnected;
+        bool isStatic = r->ospfRedistStatic;
+        if (t[2] == "connected") connected = true;
+        else if (t[2] == "static") isStatic = true;
+        else if (t[2] == "off") { connected = false; isStatic = false; }
+        else throw std::invalid_argument("ospf-redistribute source must be connected, static or off");
+        unsigned metric = 20;
+        bool type2 = true;
+        if (t.size() >= 4)
+        {
+            metric = std::stoul(t[3]);
+            if (metric == 0 || metric > 0xFFFFFFu)
+                throw std::invalid_argument("ospf redistribute metric out of range");
+        }
+        if (t.size() == 5)
+        {
+            if (t[4] == "type2") type2 = true;
+            else if (t[4] == "type1") type2 = false;
+            else throw std::invalid_argument("ospf redistribute type must be type1 or type2");
+        }
+        r->SetOspfRedistribute(connected, isStatic, metric, type2);
     }
     else if (cmd == "ospf-cost")
     {
@@ -1734,6 +2157,39 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
 
         r->AddAcl(inbound, permit, src, dst, proto);
         std::cout << "acl added\n";
+    }
+    else if (cmd == "acl6")
+    {
+        if (t.size() != 7)
+            throw std::invalid_argument("acl6 <router> in|out allow|deny <src6/p> <dst6/p> <proto|any>");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        bool inbound;
+        if (t[2] == "in") inbound = true;
+        else if (t[2] == "out") inbound = false;
+        else throw std::invalid_argument("acl6 direction must be in or out");
+        bool permit;
+        if (t[3] == "allow") permit = true;
+        else if (t[3] == "deny") permit = false;
+        else throw std::invalid_argument("acl6 action must be allow or deny");
+
+        Ipv6Subnet src;
+        Ipv6Subnet dst;
+        if (!Ipv6Subnet::TryParse(t[4], src))
+            throw std::invalid_argument("invalid IPv6 source prefix");
+        if (!Ipv6Subnet::TryParse(t[5], dst))
+            throw std::invalid_argument("invalid IPv6 destination prefix");
+        uint8_t proto = 0;
+        if (t[6] == "any") proto = 0;
+        else if (t[6] == "icmp" || t[6] == "icmpv6")
+            proto = Icmpv6Message::kNextHeader;
+        else if (t[6] == "tcp") proto = 6;
+        else if (t[6] == "udp") proto = 17;
+        else throw std::invalid_argument("acl6 proto must be any, icmp/icmpv6, tcp, or udp");
+
+        r->AddAcl6(inbound, permit, src, dst, proto);
+        std::cout << "acl6 added\n";
     }
     else
     {

@@ -35,6 +35,22 @@ namespace
         return "end";
     }
 
+    const char *AclProtoName4(uint8_t proto)
+    {
+        if(proto == 1) return "icmp";
+        if(proto == 6) return "tcp";
+        if(proto == 17) return "udp";
+        return "any";
+    }
+
+    const char *AclProtoName6(uint8_t proto)
+    {
+        if(proto == 58) return "icmpv6";
+        if(proto == 6) return "tcp";
+        if(proto == 17) return "udp";
+        return "any";
+    }
+
     struct JVal
     {
         enum Type { Null, Bool, Num, Str, Arr, Obj } type = Null;
@@ -248,6 +264,8 @@ bool SaveTopologyJson(const Topology &topo, const std::string &path,
                 << ",\"mac\":" << Quote(p->mac.ToString())
                 << ",\"ip\":" << Quote(p->hasIp ? p->ip.ToString() : std::string())
                 << ",\"prefix\":" << int(p->subnet.prefix)
+                << ",\"ip6\":" << Quote(p->hasIp6 ? p->ip6.ToString() : std::string())
+                << ",\"prefix6\":" << int(p->prefix6)
                 << ",\"vlan\":" << p->vlan
                 << ",\"tagged\":" << (p->tagged ? "true" : "false") << "}";
         }
@@ -261,6 +279,71 @@ bool SaveTopologyJson(const Topology &topo, const std::string &path,
         for(std::size_t i = 0; i < d->portList.size(); ++i)
             pmap[d->portList[i]] = { kv.first, i };
     }
+
+    out << "  \"nat\": [";
+    first = true;
+    for(const auto &kv : topo.devices)
+    {
+        const Router *r = dynamic_cast<const Router *>(kv.second.get());
+        if(!r || !r->natEnabled || !r->natInside || !r->natOutside)
+            continue;
+        auto in = pmap.find(r->natInside);
+        auto outPort = pmap.find(r->natOutside);
+        if(in == pmap.end() || outPort == pmap.end())
+            continue;
+        if(!first) out << ",";
+        first = false;
+        out << "{\"router\":" << Quote(kv.first)
+            << ",\"inside\":" << Quote(in->second.first + ":" +
+                                      std::to_string(in->second.second))
+            << ",\"outside\":" << Quote(outPort->second.first + ":" +
+                                       std::to_string(outPort->second.second))
+            << "}";
+    }
+    out << "],\n";
+
+    out << "  \"natForwards\": [";
+    first = true;
+    for(const auto &kv : topo.devices)
+    {
+        const Router *r = dynamic_cast<const Router *>(kv.second.get());
+        if(!r)
+            continue;
+        for(const Router::NatForward &f : r->natForwards)
+        {
+            if(!first) out << ",";
+            first = false;
+            out << "{\"router\":" << Quote(kv.first)
+                << ",\"proto\":" << Quote(f.proto == IpPacket::kTcp
+                                            ? "tcp" : "udp")
+                << ",\"public\":" << f.publicPort
+                << ",\"inside-ip\":" << Quote(f.insideIp.ToString())
+                << ",\"inside-port\":" << f.insidePort << "}";
+        }
+    }
+    out << "],\n";
+
+    out << "  \"span\": [";
+    first = true;
+    for(const auto &kv : topo.devices)
+    {
+        const Switch *sw = dynamic_cast<const Switch *>(kv.second.get());
+        if(!sw || !sw->spanSource || !sw->spanDest)
+            continue;
+        auto src = pmap.find(sw->spanSource);
+        auto dst = pmap.find(sw->spanDest);
+        if(src == pmap.end() || dst == pmap.end())
+            continue;
+        if(!first) out << ",";
+        first = false;
+        out << "{\"switch\":" << Quote(kv.first)
+            << ",\"src\":" << Quote(src->second.first + ":" +
+                                   std::to_string(src->second.second))
+            << ",\"dst\":" << Quote(dst->second.first + ":" +
+                                   std::to_string(dst->second.second))
+            << "}";
+    }
+    out << "],\n";
 
     out << "  \"links\": [";
     first = true;
@@ -313,6 +396,24 @@ bool SaveTopologyJson(const Topology &topo, const std::string &path,
     }
     out << "],\n";
 
+    out << "  \"routes6\": [";
+    first = true;
+    for(const auto &kv : topo.devices)
+    {
+        const Router *r = dynamic_cast<const Router *>(kv.second.get());
+        if(!r) continue;
+        for(const Ipv6Route &rt : r->route6)
+        {
+            if(rt.direct) continue;
+            if(!first) out << ",";
+            first = false;
+            out << "{\"router\":" << Quote(kv.first)
+                << ",\"dst\":" << Quote(rt.dst.ToString())
+                << ",\"next\":" << Quote(rt.nextHop.ToString()) << "}";
+        }
+    }
+    out << "],\n";
+
     out << "  \"gateways\": [";
     first = true;
     for(const auto &kv : topo.devices)
@@ -323,6 +424,69 @@ bool SaveTopologyJson(const Topology &topo, const std::string &path,
         first = false;
         out << "{\"device\":" << Quote(kv.first)
             << ",\"ip\":" << Quote(e->gateway.ToString()) << "}";
+    }
+    out << "],\n";
+
+    out << "  \"gateways6\": [";
+    first = true;
+    for(const auto &kv : topo.devices)
+    {
+        const EndDevice *e = dynamic_cast<const EndDevice *>(kv.second.get());
+        if(!e || !e->hasGateway6) continue;
+        if(!first) out << ",";
+        first = false;
+        out << "{\"device\":" << Quote(kv.first)
+            << ",\"ip\":" << Quote(e->gateway6.ToString()) << "}";
+    }
+    out << "],\n";
+
+    out << "  \"acl\": [";
+    first = true;
+    for(const auto &kv : topo.devices)
+    {
+        const Router *r = dynamic_cast<const Router *>(kv.second.get());
+        if(!r) continue;
+        auto emit = [&](const std::vector<Router::AclRule> &rules,
+                        const char *dir) {
+            for(const Router::AclRule &a : rules)
+            {
+                if(!first) out << ",";
+                first = false;
+                out << "{\"router\":" << Quote(kv.first)
+                    << ",\"dir\":" << Quote(dir)
+                    << ",\"action\":" << Quote(a.permit ? "allow" : "deny")
+                    << ",\"src\":" << Quote(a.src.ToString())
+                    << ",\"dst\":" << Quote(a.dst.ToString())
+                    << ",\"proto\":" << Quote(AclProtoName4(a.proto)) << "}";
+            }
+        };
+        emit(r->aclIn, "in");
+        emit(r->aclOut, "out");
+    }
+    out << "],\n";
+
+    out << "  \"acl6\": [";
+    first = true;
+    for(const auto &kv : topo.devices)
+    {
+        const Router *r = dynamic_cast<const Router *>(kv.second.get());
+        if(!r) continue;
+        auto emit = [&](const std::vector<Router::Acl6Rule> &rules,
+                        const char *dir) {
+            for(const Router::Acl6Rule &a : rules)
+            {
+                if(!first) out << ",";
+                first = false;
+                out << "{\"router\":" << Quote(kv.first)
+                    << ",\"dir\":" << Quote(dir)
+                    << ",\"action\":" << Quote(a.permit ? "allow" : "deny")
+                    << ",\"src\":" << Quote(a.src.ToString())
+                    << ",\"dst\":" << Quote(a.dst.ToString())
+                    << ",\"proto\":" << Quote(AclProtoName6(a.proto)) << "}";
+            }
+        };
+        emit(r->acl6In, "in");
+        emit(r->acl6Out, "out");
     }
     out << "],\n";
 
@@ -381,6 +545,8 @@ bool ParseConfigJson(const std::string &path, std::vector<std::string> &cmds,
             std::string dev = p.S("device");
             std::string mac = p.S("mac");
             std::string ip = p.S("ip");
+            std::string ip6 = p.S("ip6");
+            int prefix6 = int(p.N("prefix6", 64));
             int prefix = int(p.N("prefix", 0));
             bool tagged = p.B("tagged", false);
             int vlan = int(p.N("vlan", 0));
@@ -391,6 +557,7 @@ bool ParseConfigJson(const std::string &path, std::vector<std::string> &cmds,
 
             std::size_t pi = idx[dev]++;
             std::string ref = dev + ":" + std::to_string(pi);
+            if(!ip6.empty()) cmds.push_back("set-ip6 " + ref + " " + ip6 + "/" + std::to_string(prefix6));
             if(tagged) cmds.push_back("set-trunk " + ref + " " + std::to_string(vlan));
             else if(vlan != 0) cmds.push_back("set-vlan " + ref + " " + std::to_string(vlan));
         }
@@ -425,10 +592,53 @@ bool ParseConfigJson(const std::string &path, std::vector<std::string> &cmds,
         for(const auto &r : routes->arr)
             cmds.push_back("add-route " + r.S("router") + " " + r.S("dst") + " " + r.S("next"));
 
+    const JVal *routes6 = root.Get("routes6");
+    if(routes6 && routes6->type == JVal::Arr)
+        for(const auto &r : routes6->arr)
+            cmds.push_back("add-route6 " + r.S("router") + " " + r.S("dst") + " " + r.S("next"));
+
     const JVal *gws = root.Get("gateways");
     if(gws && gws->type == JVal::Arr)
         for(const auto &g : gws->arr)
             cmds.push_back("set-gateway " + g.S("device") + " " + g.S("ip"));
+
+    const JVal *gws6 = root.Get("gateways6");
+    if(gws6 && gws6->type == JVal::Arr)
+        for(const auto &g : gws6->arr)
+            cmds.push_back("set-gateway6 " + g.S("device") + " " + g.S("ip"));
+
+    const JVal *acls = root.Get("acl");
+    if(acls && acls->type == JVal::Arr)
+        for(const auto &a : acls->arr)
+            cmds.push_back("acl " + a.S("router") + " " + a.S("dir") + " " +
+                           a.S("action") + " " + a.S("src") + " " +
+                           a.S("dst") + " " + a.S("proto"));
+
+    const JVal *acls6 = root.Get("acl6");
+    if(acls6 && acls6->type == JVal::Arr)
+        for(const auto &a : acls6->arr)
+            cmds.push_back("acl6 " + a.S("router") + " " + a.S("dir") + " " +
+                           a.S("action") + " " + a.S("src") + " " +
+                           a.S("dst") + " " + a.S("proto"));
+
+    const JVal *nat = root.Get("nat");
+    if(nat && nat->type == JVal::Arr)
+        for(const auto &n : nat->arr)
+            cmds.push_back("nat " + n.S("router") + " on " +
+                           n.S("inside") + " " + n.S("outside"));
+
+    const JVal *natForwards = root.Get("natForwards");
+    if(natForwards && natForwards->type == JVal::Arr)
+        for(const auto &n : natForwards->arr)
+            cmds.push_back("nat-port " + n.S("router") + " " + n.S("proto") +
+                           " " + Int(n.N("public")) + " " + n.S("inside-ip") +
+                           " " + Int(n.N("inside-port")));
+
+    const JVal *span = root.Get("span");
+    if(span && span->type == JVal::Arr)
+        for(const auto &s : span->arr)
+            cmds.push_back("span " + s.S("switch") + " " + s.S("src") +
+                           " " + s.S("dst"));
 
     const JVal *lay = root.Get("layout");
     if(lay && lay->type == JVal::Arr)

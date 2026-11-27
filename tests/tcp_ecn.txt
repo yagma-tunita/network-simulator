@@ -1,0 +1,16 @@
+add-device PC1 end
+add-device R1 router
+add-device PC2 end
+add-port PC1 aa:aa:aa:aa:aa:01 10.0.0.1/24
+add-port R1 aa:00:00:00:00:01 10.0.0.254/24
+add-port R1 aa:00:00:00:00:02 10.0.1.254/24
+add-port PC2 aa:aa:aa:aa:aa:02 10.0.1.1/24
+connect PC1:0 R1:0
+connect R1:1 PC2:0
+set-gateway PC1 10.0.0.254
+set-gateway PC2 10.0.1.254
+ecn-mark R1 R1:1 on
+tcp-listen PC2 on 80
+tcp-connect PC1 10.0.1.1 80 ecn
+run 20000
+tcp-status PC2

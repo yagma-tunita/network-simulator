@@ -54,6 +54,12 @@ foreach ($file in Get-ChildItem 'examples\*' -Include *.txt, *.lua, *.yn) {
     }
 }
 
-Remove-Item 'tests\netsim_test.pcap' -ErrorAction SilentlyContinue
-Remove-Item 'tests\netsim_saved.yn' -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $root 'tests\netsim_test.pcap') -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $root 'tests\netsim_tcp_test.pcap') -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $root 'tests\netsim_saved.yn') -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $root 'tests\netsim_ipv6_saved.yn') -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $root 'tests\netsim_acl_saved.yn') -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $root 'tests\netsim_acl6_saved.yn') -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $root 'tests\netsim_nat_saved.yn') -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $root 'tests\netsim_span_saved.yn') -Force -ErrorAction SilentlyContinue
 exit $status

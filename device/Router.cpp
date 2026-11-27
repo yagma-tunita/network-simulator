@@ -1,5 +1,6 @@
 #include "Router.hpp"
 #include "Port.hpp"
+#include "../link/Link.hpp"
 #include "../core/IcmpMessage.hpp"
 #include "../core/UdpDatagram.hpp"
 #include "../core/TcpSegment.hpp"
@@ -39,6 +40,25 @@ namespace
         }
         return n;
     }
+
+    Ipv6 SolicitedNode6(const Ipv6 &target)
+    {
+        Ipv6 out;
+        out.bytes[0] = 0xFF;
+        out.bytes[1] = 0x02;
+        out.bytes[11] = 0x01;
+        out.bytes[12] = 0xFF;
+        out.bytes[13] = target.bytes[13];
+        out.bytes[14] = target.bytes[14];
+        out.bytes[15] = target.bytes[15];
+        return out;
+    }
+
+    Mac SolicitedMac6(const Ipv6 &target)
+    {
+        return Mac(0x33, 0x33, 0xFF, target.bytes[13],
+                   target.bytes[14], target.bytes[15]);
+    }
 }
 
 Route::Route(const Ipv4Subnet &dst, const Ipv4 &nextHop, bool direct)
@@ -52,6 +72,8 @@ void Router::AddPort(Port *p)
     Device::AddPort(p);
     if(p->hasIp)
         AddRoute(p->subnet, Ipv4::Any(), true);
+    if(p->hasIp6)
+        AddRoute6(Ipv6Subnet(p->ip6, p->prefix6), Ipv6(), true, p);
 }
 
 void Router::RebuildConnected()
@@ -59,8 +81,21 @@ void Router::RebuildConnected()
     routeTable.erase(std::remove_if(routeTable.begin(), routeTable.end(),
                      [](const Route &r) { return r.direct || r.dynamic; }),
                      routeTable.end());
+    MarkRoutesDirty();
     for(Port *p : portList)
         if(p->hasIp) AddRoute(p->subnet, Ipv4::Any(), true);
+    RebuildConnected6();
+}
+
+void Router::RebuildConnected6()
+{
+    route6.erase(std::remove_if(route6.begin(), route6.end(),
+                 [](const Ipv6Route &r) { return r.direct; }),
+                 route6.end());
+    for(Port *p : portList)
+        if(p->hasIp6)
+            route6.push_back(Ipv6Route(
+                Ipv6Subnet(p->ip6, p->prefix6), Ipv6(), true, p));
 }
 
 void Router::SetClock(Clock *c)
@@ -79,31 +114,101 @@ bool Router::IsMyIp(Ipv4 ip) const
     return false;
 }
 
+bool Router::IsMyIp6(const Ipv6 &ip) const
+{
+    for(const Port *p : portList)
+        if(p->hasIp6 && p->ip6 == ip)
+            return true;
+    return false;
+}
+
+void Router::AddRoute6(const Ipv6Subnet &dst, const Ipv6 &nextHop, bool direct,
+                       Port *p)
+{
+    route6.push_back(Ipv6Route(dst, nextHop, direct, p));
+}
+
+const Ipv6Route* Router::FindRoute6(const Ipv6 &dstip) const
+{
+    const Ipv6Route *best = nullptr;
+    for(const Ipv6Route &r : route6)
+        if(r.dst.Contains(dstip) && (!best || r.dst.prefix > best->dst.prefix))
+            best = &r;
+    return best;
+}
+
+Port* Router::PortForIpv6NextHop(const Ipv6 &ip) const
+{
+    for(Port *p : portList)
+        if(p->hasIp6 && Ipv6Subnet(p->ip6, p->prefix6).Contains(ip))
+            return p;
+    return nullptr;
+}
+
 void Router::AddRoute(const Ipv4Subnet &dst, const Ipv4 &nextHop, bool direct)
 {
     routeTable.push_back(Route(dst, nextHop, direct));
+    MarkRoutesDirty();
+    if(ospfEnabled && (ospfRedistConnected || ospfRedistStatic))
+        OspfOriginateExternals();
 }
 
 void Router::AddRoute(const Route &r)
 {
     routeTable.push_back(r);
+    MarkRoutesDirty();
+    if(ospfEnabled && (ospfRedistConnected || ospfRedistStatic))
+        OspfOriginateExternals();
+}
+
+void Router::RebuildRouteTrie() const
+{
+    routeTrie.clear();
+    routeTrie.push_back(RouteTrieNode{});
+    for(std::size_t i = 0; i < routeTable.size(); ++i)
+    {
+        const Route &r = routeTable[i];
+        int node = 0;
+        uint32_t net = r.dst.network.value;
+        for(int bit = 31; bit >= 32 - int(r.dst.prefix); --bit)
+        {
+            int b = int((net >> bit) & 1u);
+            int next = routeTrie[node].child[b];
+            if(next < 0)
+            {
+                next = int(routeTrie.size());
+                routeTrie[node].child[b] = next;
+                routeTrie.push_back(RouteTrieNode{});
+            }
+            node = next;
+        }
+        int &slot = routeTrie[node].route;
+        if(slot < 0 || r.metric < routeTable[slot].metric)
+            slot = int(i);
+    }
+    routeTrieDirty = false;
 }
 
 const Route *Router::FindRoute(const Ipv4 &dstip) const
 {
-    const Route *best = nullptr;
+    if(routeTrieDirty)
+        RebuildRouteTrie();
 
-    for (const Route &r : routeTable)
+    int node = 0;
+    int best = routeTrie[0].route;
+    uint32_t v = dstip.value;
+    for(int bit = 31; bit >= 0; --bit)
     {
-        if (r.dst.Contains(dstip))
-        {
-            if (!best || r.dst.prefix > best->dst.prefix ||
-                (r.dst.prefix == best->dst.prefix && r.metric < best->metric))
-                best = &r;
-        }
+        int b = int((v >> bit) & 1u);
+        node = routeTrie[node].child[b];
+        if(node < 0)
+            break;
+        if(routeTrie[node].route >= 0)
+            best = routeTrie[node].route;
     }
-
-    return best;
+    if(best < 0 || std::size_t(best) >= routeTable.size())
+        return nullptr;
+    return &routeTable[std::size_t(best)];
 }
 
 Port *Router::PortForNextHop(const Ipv4 &ip)
@@ -133,6 +238,29 @@ bool Router::AclAllows(const std::vector<AclRule> &rules, const IpPacket &pkt) c
     {
         if(r.src.Contains(pkt.srcIp) && r.dst.Contains(pkt.dstIp) &&
            (r.proto == 0 || r.proto == pkt.protocol))
+            return r.permit;
+    }
+    return true;
+}
+
+void Router::AddAcl6(bool inbound, bool permit, const Ipv6Subnet &src,
+                     const Ipv6Subnet &dst, uint8_t proto)
+{
+    Acl6Rule r;
+    r.permit = permit;
+    r.src = src;
+    r.dst = dst;
+    r.proto = proto;
+    (inbound ? acl6In : acl6Out).push_back(r);
+}
+
+bool Router::Acl6Allows(const std::vector<Acl6Rule> &rules,
+                        const Ipv6Packet &pkt) const
+{
+    for(const Acl6Rule &r : rules)
+    {
+        if(r.src.Contains(pkt.srcIp) && r.dst.Contains(pkt.dstIp) &&
+           (r.proto == 0 || r.proto == pkt.nextHeader))
             return r.permit;
     }
     return true;
@@ -391,6 +519,7 @@ void Router::SetRip(bool on)
         routeTable.erase(std::remove_if(routeTable.begin(), routeTable.end(),
                          [](const Route &r) { return r.dynamic && !r.ospf; }),
                          routeTable.end());
+        MarkRoutesDirty();
         return;
     }
 
@@ -414,6 +543,7 @@ void Router::RipTick(uint64_t gen)
                          return r.dynamic && !r.ospf && now >= r.expiresAt;
                      }),
                      routeTable.end());
+    MarkRoutesDirty();
 
     SendRipUpdates();
 
@@ -547,6 +677,7 @@ void Router::HandleRip(Port *ingress, const IpPacket &pkt, const UdpDatagram &dg
             nr.expiresAt = now + kRipTimeout;
         }
     }
+    MarkRoutesDirty();
 }
 
 void Router::OnFrame(Port *port, FramePtr frame)
@@ -559,6 +690,12 @@ void Router::OnFrame(Port *port, FramePtr frame)
     {
         arp.HandleArp(port, *frame);
         FlushPending();
+        return;
+    }
+
+    if(frame->type == EthernetFrame::kIPv6)
+    {
+        HandleIpv6(port, frame);
         return;
     }
 
@@ -595,7 +732,7 @@ void Router::OnFrame(Port *port, FramePtr frame)
 
     if(!AclAllows(aclIn, pkt))
     {
-        ++port->drop;
+        port->CountDrop(DropReason::Acl);
         return;
     }
 
@@ -625,7 +762,7 @@ void Router::OnFrame(Port *port, FramePtr frame)
 
     if(pkt.ttl <= 1)
     {
-        ++port->drop;
+        port->CountDrop(DropReason::Ttl);
         SendIcmpError(port, *frame, pkt, IcmpMessage::kTimeExceeded);
         return;
     }
@@ -634,7 +771,7 @@ void Router::OnFrame(Port *port, FramePtr frame)
     const Route* r = FindRoute(pkt.dstIp);
     if(!r)
     {
-        ++port->drop;
+        port->CountDrop(DropReason::NoRoute);
         SendIcmpError(port, *frame, pkt, IcmpMessage::kDestUnreachable);
         return;
     }
@@ -644,18 +781,32 @@ void Router::OnFrame(Port *port, FramePtr frame)
     Port* egress = PortForNextHop(nextIp);
     if(!egress)
     {
-        ++port->drop;
+        port->CountDrop(DropReason::NoEgress);
         SendIcmpError(port, *frame, pkt, IcmpMessage::kDestUnreachable);
         return;
     }
 
     if(!AclAllows(aclOut, pkt))
     {
-        ++port->drop;
+        port->CountDrop(DropReason::Acl);
         return;
     }
 
     ApplyNatEgress(port, egress, pkt);
+
+    auto eit = ecnMark.find(egress);
+    if(eit != ecnMark.end() && eit->second && pkt.ecn == 2)
+        pkt.ecn = 3;
+
+    if(pkt.dontFragment && egress->link &&
+       pkt.payload.size() + IpPacket::kHeaderSize > egress->link->mtu)
+    {
+        port->CountDrop(DropReason::Mtu);
+        SendIcmpError(port, *frame, pkt, IcmpMessage::kDestUnreachable,
+                      IcmpMessage::kFragNeeded, egress->link->mtu,
+                      egress->ip);
+        return;
+    }
 
     Mac nextMac;
     if(!arp.Lookup(nextIp, nextMac))
@@ -665,7 +816,7 @@ void Router::OnFrame(Port *port, FramePtr frame)
         if(q.size() >= kMaxPendingPerDest)
         {
             ++droppedPending;
-            ++port->drop;
+            port->CountDrop(DropReason::ArpPending);
             return;
         }
         q.push_back(Pending{egress, pkt, now});
@@ -677,20 +828,208 @@ void Router::OnFrame(Port *port, FramePtr frame)
         nextMac, egress->mac, EthernetFrame::kIPv4, pkt.ToBytes()));
 }
 
+void Router::SendIcmp6(Port *egress, const Ipv6 &src, const Ipv6 &dst,
+                       const Mac &dstMac, const Icmpv6Message &msg)
+{
+    if(!egress)
+        return;
+    Ipv6Packet pkt(src, dst, Icmpv6Message::kNextHeader,
+                   msg.ToBytes(src, dst));
+    if(msg.type == Icmpv6Message::kNeighborSolicit ||
+       msg.type == Icmpv6Message::kNeighborAdvert)
+        pkt.hopLimit = 255;
+    egress->Send(std::make_shared<const EthernetFrame>(
+        dstMac, egress->mac, EthernetFrame::kIPv6, pkt.ToBytes()));
+}
+
+void Router::SendNs6(Port *egress, const Ipv6 &target)
+{
+    if(!egress || !egress->hasIp6)
+        return;
+    Icmpv6Message ns;
+    ns.type = Icmpv6Message::kNeighborSolicit;
+    ns.target = target;
+    ns.options = NdpLinkLayerOption(1, egress->mac);
+    SendIcmp6(egress, egress->ip6, SolicitedNode6(target),
+              SolicitedMac6(target), ns);
+}
+
+void Router::SendIcmp6Error(Port *ingress, const EthernetFrame &origin,
+                            const Ipv6Packet &pkt, uint8_t type, uint8_t code)
+{
+    if(!ingress || !ingress->hasIp6)
+        return;
+    Icmpv6Message err;
+    err.type = type;
+    err.code = code;
+    std::vector<uint8_t> quoted = pkt.ToBytes();
+    if(quoted.size() > 1280)
+        quoted.resize(1280);
+    err.payload = quoted;
+    SendIcmp6(ingress, ingress->ip6, pkt.srcIp, origin.src, err);
+}
+
+void Router::FlushPending6(const Ipv6 &neighbor, const Mac &mac)
+{
+    auto it = pending6.find(neighbor);
+    if(it == pending6.end())
+        return;
+    for(const Pending6 &p : it->second)
+        p.egress->Send(std::make_shared<const EthernetFrame>(
+            mac, p.egress->mac, EthernetFrame::kIPv6, p.pkt.ToBytes()));
+    pending6.erase(it);
+}
+
+void Router::AgePending6(uint64_t now)
+{
+    for(auto it = pending6.begin(); it != pending6.end();)
+    {
+        std::vector<Pending6> &q = it->second;
+        std::size_t before = q.size();
+        q.erase(std::remove_if(q.begin(), q.end(),
+                [now](const Pending6 &p) {
+                    return now - p.enqueuedAt > kPendingTimeout;
+                }), q.end());
+        droppedPending6 += (before - q.size());
+        if(q.empty()) it = pending6.erase(it);
+        else ++it;
+    }
+}
+
+void Router::HandleIpv6(Port *port, FramePtr frame)
+{
+    if(!port)
+        return;
+    AgePending6(clock ? clock->Now() : 0);
+
+    Ipv6Packet pkt;
+    if(!Ipv6Packet::TryFromBytes(frame->payload, pkt))
+    {
+        port->CountDrop(DropReason::Parse);
+        return;
+    }
+    if(pkt.nextHeader != Icmpv6Message::kNextHeader)
+        return;
+    if(!Acl6Allows(acl6In, pkt))
+    {
+        port->CountDrop(DropReason::Acl);
+        return;
+    }
+
+    Icmpv6Message msg;
+    if(!Icmpv6Message::TryFromBytes(pkt.payload, pkt.srcIp, pkt.dstIp, msg))
+        return;
+
+    bool multicast = pkt.dstIp.bytes[0] == 0xFF;
+    if(multicast || IsMyIp6(pkt.dstIp))
+    {
+        if(msg.type == Icmpv6Message::kNeighborSolicit)
+        {
+            Port *targetPort = nullptr;
+            for(Port *p : portList)
+                if(p->hasIp6 && p->ip6 == msg.target)
+                {
+                    targetPort = p;
+                    break;
+                }
+            if(!targetPort)
+                return;
+            Icmpv6Message na;
+            na.type = Icmpv6Message::kNeighborAdvert;
+            na.ndFlags = 0x60000000u;
+            na.target = msg.target;
+            na.options = NdpLinkLayerOption(2, targetPort->mac);
+            SendIcmp6(targetPort, msg.target, pkt.srcIp, frame->src, na);
+            return;
+        }
+        if(msg.type == Icmpv6Message::kNeighborAdvert)
+        {
+            nd6Cache[msg.target] = frame->src;
+            FlushPending6(msg.target, frame->src);
+            return;
+        }
+        if(msg.type == Icmpv6Message::kEchoRequest)
+        {
+            Port *targetPort = nullptr;
+            for(Port *p : portList)
+                if(p->hasIp6 && p->ip6 == pkt.dstIp)
+                {
+                    targetPort = p;
+                    break;
+                }
+            if(!targetPort)
+                return;
+            Icmpv6Message rep = msg;
+            rep.type = Icmpv6Message::kEchoReply;
+            SendIcmp6(targetPort, pkt.dstIp, pkt.srcIp, frame->src, rep);
+        }
+        return;
+    }
+
+    const Ipv6Route *r = FindRoute6(pkt.dstIp);
+    if(!r)
+    {
+        port->CountDrop(DropReason::NoRoute);
+        SendIcmp6Error(port, *frame, pkt, Icmpv6Message::kDestUnreachable, 0);
+        return;
+    }
+    Ipv6 nextHop = r->direct ? pkt.dstIp : r->nextHop;
+    Port *egress = r->port ? r->port : PortForIpv6NextHop(nextHop);
+    if(!egress)
+    {
+        port->CountDrop(DropReason::NoEgress);
+        SendIcmp6Error(port, *frame, pkt, Icmpv6Message::kDestUnreachable, 0);
+        return;
+    }
+    if(!Acl6Allows(acl6Out, pkt))
+    {
+        port->CountDrop(DropReason::Acl);
+        return;
+    }
+    if(pkt.hopLimit <= 1)
+    {
+        port->CountDrop(DropReason::Ttl);
+        SendIcmp6Error(port, *frame, pkt, Icmpv6Message::kTimeExceeded, 0);
+        return;
+    }
+    pkt.hopLimit--;
+
+    auto cit = nd6Cache.find(nextHop);
+    if(cit != nd6Cache.end())
+    {
+        egress->Send(std::make_shared<const EthernetFrame>(
+            cit->second, egress->mac, EthernetFrame::kIPv6, pkt.ToBytes()));
+        return;
+    }
+
+    std::vector<Pending6> &q = pending6[nextHop];
+    if(q.size() >= kMaxPendingPerDest)
+    {
+        ++droppedPending6;
+        port->CountDrop(DropReason::Resource);
+        return;
+    }
+    q.push_back(Pending6{ egress, pkt, clock ? clock->Now() : 0 });
+    SendNs6(egress, nextHop);
+}
+
 void Router::SendIcmpError(Port *ingress, const EthernetFrame &origin,
-                           const IpPacket &pkt, uint8_t type)
+                           const IpPacket &pkt, uint8_t type,
+                           uint8_t code, uint16_t mtu, Ipv4 source)
 {
     if(!ingress || !ingress->hasIp) return;
 
     IcmpMessage err;
     err.type = type;
-    err.code = 0;
+    err.code = code;
+    err.nextHopMtu = mtu;
 
     std::vector<uint8_t> orig = pkt.ToBytes();
     if(orig.size() > 28) orig.resize(28);
     err.payload = orig;
 
-    IpPacket out(ingress->ip, pkt.srcIp, IpPacket::kIcmp, err.ToBytes());
+    Ipv4 saddr = (source == Ipv4::Any()) ? ingress->ip : source;
+    IpPacket out(saddr, pkt.srcIp, IpPacket::kIcmp, err.ToBytes());
     ingress->Send(std::make_shared<const EthernetFrame>(
         origin.src, ingress->mac, EthernetFrame::kIPv4, out.ToBytes()));
 }

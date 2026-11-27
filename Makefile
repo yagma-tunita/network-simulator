@@ -43,7 +43,7 @@ UNIT_BIN := $(BUILD)/unit_tests
 FUZZ_SRC := tests/fuzz_parsers.cpp
 FUZZ_BIN := $(BUILD)/fuzz_parsers
 
-.PHONY: all clean test unit fuzz san tidy dist install coverage soak perf check tools gotest
+.PHONY: all clean test unit fuzz san tidy dist install coverage soak perf check tools gotest pcapcheck
 
 TIDY ?= clang-tidy
 
@@ -115,7 +115,7 @@ soak:
 perf:
 	bash tests/perf.sh
 
-check: test gotest coverage soak perf
+check: test gotest coverage soak perf pcapcheck
 	@echo "check complete"
 
 tools:
@@ -127,6 +127,9 @@ tools:
 gotest:
 	cd tools/ynstress && $(GO) test ./...
 	cd tools/ynpcap && $(GO) test ./...
+
+pcapcheck: tools $(TARGET)
+	bash tests/pcap_conformance.sh
 
 test: $(UNIT_BIN) $(FUZZ_BIN) $(TARGET)
 	ASAN_OPTIONS=detect_leaks=1 ./$(UNIT_BIN)

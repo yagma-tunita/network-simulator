@@ -1,0 +1,11 @@
+add-device PC1 end
+add-device R1 router
+add-port PC1 aa:aa:aa:aa:aa:01
+add-port R1 aa:00:00:00:00:01
+connect PC1:0 R1:0
+set-ip6 PC1:0 2001:db8:1::1/64
+set-ip6 R1:0 2001:db8:1::254/64
+set-gateway6 PC1 2001:db8:1::254
+ping6 PC1 2001:db8:99::1
+run 200
+drop-stats R1

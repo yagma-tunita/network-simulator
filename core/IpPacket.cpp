@@ -21,6 +21,11 @@ bool IpPacket::operator==(const IpPacket &o) const
 {
     return ttl == o.ttl
         &&  protocol == o.protocol
+        &&  ecn == o.ecn
+        &&  identification == o.identification
+        &&  dontFragment == o.dontFragment
+        &&  moreFragments == o.moreFragments
+        &&  fragmentOffset == o.fragmentOffset
         &&  srcIp == o.srcIp
         &&  dstIp == o.dstIp
         &&  payload == o.payload;
@@ -45,10 +50,13 @@ std::vector<uint8_t> IpPacket::ToBytes() const
     buf.reserve(kHeaderSize + payload.size());
 
     AppendU8(buf, 0x45);
-    AppendU8(buf, 0);
+    AppendU8(buf, uint8_t(ecn & 0x03));
     AppendU16(buf, uint16_t(kHeaderSize + payload.size()));
-    AppendU16(buf, 0);
-    AppendU16(buf, 0);
+    AppendU16(buf, identification);
+    uint16_t flagsOffset = uint16_t((dontFragment ? 0x4000u : 0u) |
+                                    (moreFragments ? 0x2000u : 0u) |
+                                    (fragmentOffset & 0x1FFFu));
+    AppendU16(buf, flagsOffset);
     AppendU8(buf, ttl);
     AppendU8(buf, protocol);
     AppendU16(buf, 0);
@@ -77,8 +85,14 @@ bool IpPacket::TryFromBytes(const std::vector<uint8_t> &buf, IpPacket &out)
     hdr[11] = 0;
     if(HeaderChecksum(hdr) != stored)return false;
 
+    out.identification = ReadU16(buf, 4);
+    uint16_t flagsOffset = ReadU16(buf, 6);
+    out.dontFragment = (flagsOffset & 0x4000u) != 0;
+    out.moreFragments = (flagsOffset & 0x2000u) != 0;
+    out.fragmentOffset = uint16_t(flagsOffset & 0x1FFFu);
     out.ttl = ReadU8(buf, 8);
     out.protocol = ReadU8(buf, 9);
+    out.ecn = uint8_t(ReadU8(buf, 1) & 0x03);
     out.srcIp = ReadIpv4(buf, 12);
     out.dstIp = ReadIpv4(buf, 16);
     out.payload = std::vector<uint8_t>(buf.begin() + kHeaderSize, buf.begin() + total);

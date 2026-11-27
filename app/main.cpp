@@ -167,19 +167,20 @@ static void RunInteractive(CommandContext &ctx)
     LineEditor::LoadHistory(hist);
     LineEditor::SetCompleter([&ctx](const std::string &buffer) {
         static const char *cmds[] = {
-            "add-device", "add-port", "connect", "add-route", "set-vlan",
-            "set-trunk", "set-stp", "set-stp-mode", "set-bridge", "stp-status",
+            "add-device", "add-port", "connect", "add-route", "add-route6", "set-vlan", "set-trunk", "set-stp", "set-stp-mode", "set-bridge", "stp-status", "span",
             "set-link", "stats", "remove-device", "remove-port", "disconnect",
-            "rename-device", "set-ip", "state", "set-gateway", "arp", "ping",
+            "rename-device", "set-ip", "state", "set-gateway", "set-gateway6", "arp", "ping",
             "run", "wait", "step", "trace", "lookup", "bench", "pcap", "save", "load",
-            "new", "demo", "help", "quit", "exit",
-            "devices", "links", "ports", "routes", "arp-table", "mac-table",
-            "traceroute", "export", "udp-echo", "udp-send", "map", "generate",
-            "tcp-listen", "tcp-connect", "tcp-keepalive", "tcp-status", "tcp-backlog",
-            "dhcp-server", "dhcp-client", "dhcp-lease-time", "dhcp-release", "dhcp-relay", "dns-server", "dns-ttl", "dns-negative-ttl", "dns-cache-size", "dns-ttl-bounds", "dns-record", "dns-aaaa", "dns-cname", "dns-mx", "dns-zone", "dns-secondary", "dns-notify-target", "dns-notify", "dns-ns", "dns-soa", "dns-query", "dns-axfr", "dns-ixfr", "dns-axfr-allow", "dns-tsig", "dns-tsig-require", "dns-update-allow", "dns-update-add", "dns-update-del", "dns-update-check", "dns-resolver", "dns-retry",
+            "new", "demo", "help", "quit", "exit", "acl6",
+            "ping6", "set-ip6",
+            "devices", "links", "ports", "routes", "routes6", "arp-table", "nd6-table", "mac-table",
+            "traceroute", "traceroute6", "export", "udp-echo", "udp-send", "map", "generate",
+            "drop-stats",
+            "tcp-listen", "tcp-connect", "tcp-send", "tcp-keepalive", "tcp-status", "tcp-backlog", "tcp-congestion", "tcp-tlp", "tcp-prr", "tcp-rack", "tcp-pacing", "tcp-port-range",
+            "dhcp-server", "dhcp-client", "dhcp-lease-time", "dhcp-release", "dhcp-relay", "ecn-mark", "dns-server", "dns-ttl", "dns-negative-ttl", "dns-cache-size", "dns-ttl-bounds", "dns-record", "dns-aaaa", "dns-cname", "dns-mx", "dns-zone", "dns-secondary", "dns-notify-target", "dns-notify", "dns-ns", "dns-soa", "dns-query", "dns-axfr", "dns-ixfr", "dns-axfr-allow", "dns-tsig", "dns-tsig-require", "dns-update-allow", "dns-update-add", "dns-update-del", "dns-update-check", "dns-resolver", "dns-retry",
             "nat", "nat-port", "nat-table",
             "rip", "rip-status",
-            "ospf", "ospf-status", "ospf-auth", "ospf-cost", "ospf-passive", "ospf-area", "ospf-area-type", "ospf-external",
+            "ospf", "ospf-status", "ospf-router-id", "ospf-auth", "ospf-cost", "ospf-passive", "ospf-area", "ospf-area-type", "ospf-summary", "ospf-external", "ospf-default-originate", "ospf-redistribute",
             "tcp-lite-echo", "tcp-lite-echo-client", "acl"
         };
         std::vector<std::string> out;

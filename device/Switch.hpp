@@ -2,7 +2,7 @@
 
 #include "../core/Mac.hpp"
 #include "Device.hpp"
-#include <map>
+#include <unordered_map>
 #include <utility>
 #include <cstdint>
 #include <cstddef>
@@ -16,13 +16,26 @@ struct Switch : Device
         uint64_t lastSeen = 0;
     };
 
+    struct MacTableKeyHash
+    {
+        std::size_t operator()(
+            const std::pair<uint16_t, Mac> &key) const
+        {
+            std::size_t h = key.first;
+            for(uint8_t b : key.second.bytes)
+                h = (h ^ b) * 16777619u;
+            return h;
+        }
+    };
+
     static constexpr uint64_t kAgingTimeout = 300;
     static constexpr uint64_t kSweepInterval = 50;
     static constexpr uint64_t kForwardDelay = 15;
     static constexpr uint64_t kHello = 2;
     static constexpr uint64_t kMaxAge = 20;
 
-    std::map<std::pair<uint16_t, Mac>, Entry> macTable;
+    std::unordered_map<std::pair<uint16_t, Mac>, Entry, MacTableKeyHash>
+        macTable;
     uint64_t lastSweep = 0;
 
     bool stpEnabled = false;
@@ -34,8 +47,15 @@ struct Switch : Device
     Mac stpRootMac;
     uint32_t stpRootCost = 0;
     int stpRootPort = -1;
+    Port *spanSource = nullptr;
+    Port *spanDest = nullptr;
 
     void OnFrame(Port* port, FramePtr frame) override;
+    void SetSpan(Port *source, Port *dest)
+    {
+        spanSource = source;
+        spanDest = dest;
+    }
     void OnLinkUp(Port* port) override;
     void OnLinkDown(Port* port) override;
     void Emit(Port* out, uint16_t vid, FramePtr frame);

@@ -29,6 +29,77 @@ Initial product build.
   out-of-order reassembly, RTO retransmission, FIN/TIME_WAIT, and slow-start/
   congestion-avoidance; packet-level tests incl. loss-driven retransmission.
 - Deprecated `tcp-lite` legacy lightweight transport (not TCP).
+- TCP congestion control selection (`tcp-congestion`): Reno and CUBIC-style
+  growth with recovery-state tracking, plus a loss-path scenario.
+- TCP Tail Loss Probe (`tcp-tlp`) with PTO probing of the highest unacked
+  segment, plus unit and scenario coverage.
+- TCP PRR-style recovery pacing (`tcp-prr`): delivered/out accounting, recovery
+  credit caps on new data, Reno-friendly exit, and recovery counters.
+- TCP RACK-style SACK loss detection (`tcp-rack`): per-segment send timestamps,
+  RTT/reorder windows, and duplicate-ACK/SACK-triggered hole recovery.
+- TCP pacing (`tcp-pacing`): optional cwnd/SRTT-based send scheduling with
+  generation-guarded pacing events; default off to preserve burst behavior.
+- TCP ephemeral port lifecycle: collision-checked cursor allocation over a
+  configurable `tcp-port-range`, with port-exhaustion handling.
+- TCP ECN: SYN ECE/CWR negotiation, ECT data, receiver CE echo, sender
+  congestion response/CWR, and router `ecn-mark` for CE marking.
+- TCP MSS follows `set-link ... mtu`; link MTU 576 yields MSS 536 with
+  negotiation clamping for both active and passive connections.
+- IPv4 fragmentation and reassembly: egress links split datagrams larger than
+  the link MTU into aligned fragments, and ingress ports reassemble them with
+  bounded, timeout-pruned buffers (including router transit).
+- IPv4 DF handling: routers drop oversized DF datagrams and return ICMP
+  Fragmentation Needed with the next-hop MTU; `udp-send ... df` exercises the
+  path and prints the reported MTU.
+- TCP path-MTU discovery: TCP data sets DF, segment sizing accounts for TCP
+  option overhead, and ICMP Fragmentation Needed lowers the path MTU and
+  re-segments unacked data. Added `tcp-send` for established connections and
+  `pmtu=` in `tcp-status`.
+- TCP basic PMTU growth re-probing: after a 60-second hold, new data re-probes
+  upward toward the local egress MTU; `peerMss` restores the negotiated segment
+  size when the path recovers.
+- IPv6 host support on a shared link: `Ipv6Packet`, ICMPv6 with pseudo-header
+  checksums, Neighbor Solicitation/Advertisement with link-layer options,
+  `set-ip6`, and `ping6`. IPv6 routing is not implemented yet.
+- IPv6 persistence: ports with IPv6 addresses now round-trip through
+  `save`/`load`, appear in `state` JSON and `ports` output, with an
+  `ipv6_persist` regression scenario.
+- IPv6 routing: `Ipv6Subnet` 128-bit prefixes, connected and static routes
+  (`set-gateway6`, `add-route6`, `routes6`), and router forwarding with
+  NDP next-hop resolution. IPv6 routes/gateways persist through `save`/`load`.
+- IPv6 diagnostics/errors: `nd6-table` prints resolved NDP peers; routers return
+  ICMPv6 Destination Unreachable and Time Exceeded with quoted packets.
+- IPv6 `ping6` now has bounded timeouts: unanswered probes report
+  `ping6 timeout from <target> seq=<n>` and clean up pending NDP state; ICMPv6
+  error reports cancel the matching probe.
+- IPv6 `traceroute6`: hop-limited ICMPv6 probes report per-hop Time Exceeded,
+  the target reply, and `*` on timeout; stops at the target or max hops.
+- IPv6 ACLs (`acl6`): ordered in/out allow/deny rules by source/destination
+  prefix and next-header; blocked packets increment the `acl` drop reason.
+- IPv4 and IPv6 ACLs now persist through `save`/`load`, with an `acl_persist`
+  regression scenario and IPv6 ACL persistence coverage.
+- IPv6 drop accounting: malformed packets, ACLs, no-route, no-egress, hop-limit
+  expiry, and pending-queue exhaustion now increment the corresponding
+  `drop-stats` reasons; timed-out IPv6 pending packets are aged out.
+- NAT persistence: `save`/`load` now records NAT inside/outside interfaces and
+  static port-forward rules; added a `nat_persist` regression scenario.
+- `state` JSON now includes IPv6 gateways, NDP neighbor caches, and router IPv6
+  route tables for automation.
+- OSPF router IDs can be set explicitly with `ospf-router-id`; OSPF uses the
+  configured ID for LSAs, neighbor matching, and status output.
+- Switch ingress port mirroring (`span <switch> <src> <dst> | off`) copies
+  frames received on a source port to a monitor port using normal egress
+  VLAN/STP handling.
+- SPAN mirroring configuration now persists through `save`/`load`.
+- Per-port drop-reason counters (`drop-stats <device>`): link-down, loss, mtu,
+  acl, ttl, no-route, no-egress, arp-pending, fragment, stp, vlan, parse, and
+  resource reasons.
+- Scope clarification: TCP/DHCP/DNS/routing are offline simulator stacks, not
+  live-wire implementations or bridges; README now documents TCP status against
+  simulator goals instead of live-network interoperability.
+- Offline TCP PCAP conformance gate: `ynpcap` now tracks data segments, repeated
+  sequences, SACK blocks, ECN/CE and DF; it flags payloads exceeding the peer
+  MSS. Added `make pcapcheck` (also part of `make check`).
 - DHCP server/client (`dhcp-server`/`dhcp-client`; pool, gateway and DNS option)
   and a DNS A-record server plus resolver (`dns-server`/`dns-record`/`dns-query`).
 - DHCP relay (`dhcp-relay`) with giaddr rewriting and unicast server replies;
@@ -131,6 +202,11 @@ Initial product build.
   area 1 -> area 0 -> area 2 ping scenario.
 - OSPF Type 5 external routes: `ospf-external <router> <ip/prefix> [metric]`,
   domain-wide LSA flooding, external route installation, and `external=` status.
+- OSPF default-information originate and connected/static redistribution
+  (`ospf-default-originate`, `ospf-redistribute`) with metric/type selection,
+  Type 5/Type 7 externals, and route-table refresh on route changes.
+- OSPF area range summaries (`ospf-summary`): Type 3 aggregation with component
+  suppression and `not-advertise` filtering.
 - OSPF Type 4 ASBR summaries: ABRs advertise ASBR reachability into other areas,
   and external routes are installed via the Type 4/ASBR path.
 - OSPF external withdrawal (`ospf-external ... clear`): stale Type 5 LSAs are

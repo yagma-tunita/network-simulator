@@ -17,6 +17,11 @@ struct IpPacket
 
     uint8_t ttl = kDefaultTtl;
     uint8_t protocol = 0;
+    uint8_t ecn = 0;
+    uint16_t identification = 0;
+    bool dontFragment = false;
+    bool moreFragments = false;
+    uint16_t fragmentOffset = 0;
     Ipv4 srcIp;
     Ipv4 dstIp;
     std::vector<uint8_t>payload;
@@ -25,6 +30,7 @@ struct IpPacket
     std::string ToString() const;
 
     void DecTtl();
+    bool IsFragment() const { return moreFragments || fragmentOffset != 0; }
     std::vector<uint8_t>ToBytes()const;
     static bool TryFromBytes(const std::vector<uint8_t> &buf, IpPacket &out);
 
