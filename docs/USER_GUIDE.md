@@ -81,6 +81,8 @@ set-stp-mode <switch> stp|rstp
 set-bridge <switch> <priority>
 stp-status <switch>
 span       <switch> <src-dev:idx> <dst-dev:idx> | off
+lldp       <device> on|off
+lldp-table <device>
 set-link   <dev:idx> down|up|loss|dup|jitter|mtu|clear
 remove-device <name>
 remove-port   <dev:idx>
@@ -217,7 +219,9 @@ host's gateway to the router interface, then `ping PC1 192.168.2.1`.
 **STP.** Connect three switches in a triangle, `set-stp` on, `run`, then ping: one
 link is blocked and traffic still flows. `set-link SW3:1 down` and `run` to watch
 reconvergence. **SPAN.** `span SW1 SW1:0 SW1:2` mirrors frames received on port 0
-to port 2; `span SW1 off` clears it.
+to port 2; `span SW1 off` clears it. **LLDP.** `lldp PC1 on` makes a host,
+switch, or router advertise every 30 s; `lldp-table PC1` lists learned neighbors
+and their chassis/port IDs, expiring after the advertised TTL.
 
 ## 7. Automation
 

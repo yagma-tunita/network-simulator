@@ -5,6 +5,7 @@
 #include "core/Ipv6Packet.hpp"
 #include "core/Icmpv6Message.hpp"
 #include "core/BgpMessage.hpp"
+#include "core/Lldp.hpp"
 #include "core/Mac.hpp"
 #include "core/ARP.hpp"
 #include "core/IpPacket.hpp"
@@ -1248,11 +1249,14 @@ static void TestBgpMessage()
     update.localPref = 100;
     update.hasMed = true;
     update.med = 50;
+    update.communities = { (65001u << 16) | 100u };
     b = update.ToBytes();
     CHECK(BgpMessage::TryFromBytes(b, out));
     CHECK(out == update);
     CHECK(out.nlri.size() == 1);
     CHECK(out.nlri[0].prefix == 24);
+    CHECK(out.communities.size() == 1);
+    CHECK(out.communities[0] == ((65001u << 16) | 100u));
 
     BgpMessage note;
     note.type = BgpMessage::Notification;
@@ -1288,6 +1292,59 @@ static void TestBgpSelection()
     r.BgpAddPath(b);
     CHECK(r.bgpRib.size() == 1);
     CHECK(r.bgpRib[0].peer == b.peer);
+}
+
+static void TestBgpPolicy()
+{
+    Router r;
+    Ipv4Subnet p(Ipv4("203.0.113.0"), 24);
+    BgpFilter denyPrefix;
+    denyPrefix.prefix = p;
+    denyPrefix.permit = false;
+    std::vector<BgpFilter> prefixes{ denyPrefix };
+    CHECK(!r.BgpFilterAllows(prefixes, p));
+    CHECK(r.BgpFilterAllows(std::vector<BgpFilter>{}, p));
+
+    BgpAsFilter denyAs;
+    denyAs.asn = 65010;
+    denyAs.permit = false;
+    std::vector<BgpAsFilter> ases{ denyAs };
+    CHECK(!r.BgpAsFilterAllows(ases, { 65002, 65010 }));
+    CHECK(r.BgpAsFilterAllows(ases, { 65002 }));
+
+    BgpCommunityFilter denyCommunity;
+    denyCommunity.community = (65001u << 16) | 100u;
+    denyCommunity.permit = false;
+    std::vector<BgpCommunityFilter> communities{ denyCommunity };
+    CHECK(!r.BgpCommunityFilterAllows(
+        communities, { (65001u << 16) | 100u }));
+    CHECK(r.BgpCommunityFilterAllows(communities, { (65002u << 16) | 200u }));
+
+    BgpPath path;
+    path.prefix = p;
+    path.peer = Ipv4("10.0.0.2");
+    r.BgpAddPath(path);
+    r.bgpInFilters[path.peer].push_back(denyPrefix);
+    r.BgpReapplyPolicy();
+    CHECK(r.bgpPaths.empty());
+    CHECK(r.bgpRib.empty());
+}
+
+static void TestLldp()
+{
+    LldpFrame f;
+    f.chassis = Mac("aa:bb:cc:dd:ee:ff");
+    f.portId = "p3";
+    f.ttl = 120;
+    f.systemName = "r1";
+    std::vector<uint8_t> b = f.ToBytes();
+    LldpFrame out;
+    CHECK(LldpFrame::TryFromBytes(b, out));
+    CHECK(out == f);
+    CHECK(out.chassis == f.chassis);
+    CHECK(out.portId == "p3");
+    CHECK(LldpFrame::Multicast() == Mac("01:80:c2:00:00:0e"));
+    CHECK(!LldpFrame::TryFromBytes(std::vector<uint8_t>(3, 0), out));
 }
 
 static void TestHmacTsig()
@@ -2321,6 +2378,8 @@ int main()
     TestIpv6Packet();
     TestBgpMessage();
     TestBgpSelection();
+    TestBgpPolicy();
+    TestLldp();
     TestHmacTsig();
     TestRipMessage();
     TestOspfPacket();

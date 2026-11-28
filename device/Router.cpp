@@ -179,13 +179,65 @@ void Router::BgpWithdrawPeer(const Ipv4 &peer)
 
 void Router::BgpReapplyPolicy()
 {
-    for(BgpPath &p : bgpPaths)
+    for(auto it = bgpPaths.begin(); it != bgpPaths.end();)
     {
-        auto it = bgpLocalPrefIn.find(p.peer);
-        p.localPref = it != bgpLocalPrefIn.end()
-            ? it->second : p.receivedLocalPref;
+        auto fit = bgpInFilters.find(it->peer);
+        if(fit != bgpInFilters.end() &&
+           !BgpFilterAllows(fit->second, it->prefix))
+        {
+            it = bgpPaths.erase(it);
+            continue;
+        }
+        auto ait = bgpInAsFilters.find(it->peer);
+        if(ait != bgpInAsFilters.end() &&
+           !BgpAsFilterAllows(ait->second, it->asPath))
+        {
+            it = bgpPaths.erase(it);
+            continue;
+        }
+        auto cit = bgpCommunityFilters.find(it->peer);
+        if(cit != bgpCommunityFilters.end() &&
+           !BgpCommunityFilterAllows(cit->second, it->communities))
+        {
+            it = bgpPaths.erase(it);
+            continue;
+        }
+        auto pit = bgpLocalPrefIn.find(it->peer);
+        it->localPref = pit != bgpLocalPrefIn.end()
+            ? pit->second : it->receivedLocalPref;
+        ++it;
     }
     BgpSelect();
+}
+
+bool Router::BgpFilterAllows(const std::vector<BgpFilter> &filters,
+                             const Ipv4Subnet &prefix) const
+{
+    for(const BgpFilter &f : filters)
+        if(f.prefix == prefix)
+            return f.permit;
+    return true;
+}
+
+bool Router::BgpAsFilterAllows(const std::vector<BgpAsFilter> &filters,
+                               const std::vector<uint16_t> &asPath) const
+{
+    for(const BgpAsFilter &f : filters)
+        for(uint16_t asn : asPath)
+            if(asn == f.asn)
+                return f.permit;
+    return true;
+}
+
+bool Router::BgpCommunityFilterAllows(
+    const std::vector<BgpCommunityFilter> &filters,
+    const std::vector<uint32_t> &communities) const
+{
+    for(const BgpCommunityFilter &f : filters)
+        for(uint32_t community : communities)
+            if(community == f.community)
+                return f.permit;
+    return true;
 }
 
 void Router::BgpSelect()
@@ -761,6 +813,12 @@ void Router::HandleRip(Port *ingress, const IpPacket &pkt, const UdpDatagram &dg
 void Router::OnFrame(Port *port, FramePtr frame)
 {
     if(!port) return;
+
+    if(frame->type == EthernetFrame::kLLDP)
+    {
+        HandleLldp(port, frame);
+        return;
+    }
 
     if((port->mac != frame->dst) && !frame->IsBroadcast() && !frame->dst.IsGroup()) return;
 

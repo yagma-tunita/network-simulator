@@ -79,6 +79,12 @@ void EndDevice::OnFrame(Port *port, FramePtr frame)
     if (!port)
         return;
 
+    if (frame->type == EthernetFrame::kLLDP)
+    {
+        HandleLldp(port, frame);
+        return;
+    }
+
     if ((port->mac != frame->dst) && !frame->IsBroadcast() &&
         !(frame->type == EthernetFrame::kIPv6 && frame->dst.IsGroup()))
         return;

@@ -201,6 +201,8 @@ namespace
             { "set-stp", "set-stp <switch> on|off" },
             { "set-stp-mode", "set-stp-mode <switch> stp|rstp" },
             { "span", "span <switch> <src-dev:idx> <dst-dev:idx> | off" },
+            { "lldp", "lldp <device> on|off" },
+            { "lldp-table", "lldp-table <device>" },
             { "set-bridge", "set-bridge <switch> <priority>" },
             { "stp-status", "stp-status <switch>" },
             { "set-link", "set-link <dev:idx> down|up|loss|dup|jitter|mtu|clear ..." },
@@ -292,6 +294,13 @@ namespace
             { "bgp-network", "bgp-network <router> <prefix>" },
             { "bgp-local-pref", "bgp-local-pref <router> <neighbor> <value>" },
             { "bgp-med", "bgp-med <router> <prefix> <value>" },
+            { "bgp-prepend", "bgp-prepend <router> <prefix> <count>" },
+            { "bgp-filter", "bgp-filter <router> <neighbor> in|out allow|deny <prefix>" },
+            { "bgp-as-filter", "bgp-as-filter <router> <neighbor> allow|deny <asn>" },
+            { "bgp-community", "bgp-community <router> <prefix> <ASN:VALUE|clear>" },
+            { "bgp-community-filter", "bgp-community-filter <router> <neighbor> allow|deny <ASN:VALUE>" },
+            { "bgp-max-prefix", "bgp-max-prefix <router> <neighbor> <max>" },
+            { "bgp-shutdown", "bgp-shutdown <router> <neighbor> on|off" },
             { "bgp-path", "bgp-path <router> <peer> <prefix> <next-hop> <asn...>" },
             { "bgp-status", "bgp-status <router>" },
             { "map", "map" },
@@ -554,6 +563,8 @@ void PrintHelp()
         "  set-stp    <switch> on|off\n"
         "  set-stp-mode <switch> stp|rstp\n"
         "  span       <switch> <src-dev:idx> <dst-dev:idx> | off\n"
+        "  lldp       <device> on|off\n"
+        "  lldp-table <device>\n"
         "  set-bridge <switch> <priority>\n"
         "  stp-status <switch>\n"
         "  set-link   <dev:idx> down|up|loss|dup|jitter|mtu|clear ...\n"
@@ -643,6 +654,13 @@ void PrintHelp()
         "  bgp-network <router> <prefix>\n"
         "  bgp-local-pref <router> <neighbor> <value>\n"
         "  bgp-med    <router> <prefix> <value>\n"
+        "  bgp-prepend <router> <prefix> <count>\n"
+        "  bgp-filter <router> <neighbor> in|out allow|deny <prefix>\n"
+        "  bgp-as-filter <router> <neighbor> allow|deny <asn>\n"
+        "  bgp-community <router> <prefix> <ASN:VALUE|clear>\n"
+        "  bgp-community-filter <router> <neighbor> allow|deny <ASN:VALUE>\n"
+        "  bgp-max-prefix <router> <neighbor> <max>\n"
+        "  bgp-shutdown <router> <neighbor> on|off\n"
         "  bgp-path   <router> <peer> <prefix> <next-hop> <asn...>\n"
         "  bgp-status <router>\n"
         "  map\n"

@@ -85,6 +85,9 @@ comment-free; all documentation lives in this README and `DEVELOPMENT_LOG.md`.
   port states with forward delay, enabled per switch.
 - STP reconvergence on link up/down (with MAC flush) and per-port rx/tx/drop counters.
 - STP Hello/Max-Age keepalives and an RSTP-style rapid mode (`set-stp-mode`).
+- LLDP neighbor discovery (`lldp on|off`, `lldp-table`): hosts, switches, and
+  routers exchange chassis/port/TTL TLVs over `01:80:c2:00:00:0e`; entries age
+  out after their advertised TTL.
 - Frame capture to `.pcap`, JSON topology `save` / `load`, and a bounded `run`.
 - ICMP: echo (ping) with RTT + timeout, Time Exceeded, and Destination Unreachable.
 - Hosts queue outbound traffic behind automatic ARP resolution and keep a gateway.
@@ -158,8 +161,10 @@ comment-free; all documentation lives in this README and `DEVELOPMENT_LOG.md`.
   TCP 179, exchange OPEN/KEEPALIVE and UPDATE messages, install selected
   prefixes into the forwarding table, run 30-second keepalive / 90-second hold
   timers, and reconnect after session failure. Withdrawals and peer-down events
-  remove paths; per-neighbor local-preference and outbound MED policy are
-  supported, with broader policy still future work.
+  remove paths; per-neighbor local-preference, outbound MED, prefix filters,
+  inbound AS-path filters, outbound AS-path prepend, outbound community
+  attachment plus inbound community filters, per-neighbor prefix limits, and
+  administrative neighbor shutdown are supported.
 - Link impairment (`set-link ... loss/dup/jitter/mtu/clear`) for reliability
   testing and MTU-driven fragmentation.
 - Per-router ACLs (in/out, allow/deny by source/destination prefix and protocol).
@@ -238,7 +243,8 @@ Internet/
 │   ├── UdpDatagram.hpp / .cpp
 │   ├── TcpSegment.hpp / .cpp
 │   ├── DhcpMessage.hpp / .cpp
-│   └── DnsMessage.hpp / .cpp
+│   ├── DnsMessage.hpp / .cpp
+│   └── Lldp.hpp / .cpp     # LLDP TLV codec
 ├── device/                  # networked devices and interfaces
 │   ├── Device.hpp / .cpp    # abstract base
 │   ├── ArpAgent.hpp / .cpp  # shared ARP cache + request/reply
@@ -764,6 +770,8 @@ set-stp-mode <switch> stp|rstp                 # RSTP-style rapid mode
 set-bridge <switch> <priority>                 # bridge priority (default 32768)
 stp-status <switch>                            # print root + per-port state
 span       <switch> <src-dev:idx> <dst-dev:idx> | off  # ingress port mirroring
+lldp       <device> on|off                     # LLDP advertisement + discovery
+lldp-table <device>                            # learned LLDP neighbors
 set-link   <dev:idx> down|up|loss|dup|jitter|mtu|clear
 stats      <device>                            # per-port rx/tx/drop counters
 drop-stats <device>                            # per-port drop-reason breakdown
@@ -846,6 +854,13 @@ bgp-neighbor <router> <ip> <remote-as>         # configured BGP neighbor
 bgp-network <router> <prefix>                  # local advertised network
 bgp-local-pref <router> <neighbor> <value>     # inbound local preference
 bgp-med    <router> <prefix> <value>           # outbound MED
+bgp-prepend <router> <prefix> <count>          # outbound AS-path prepend
+bgp-filter <router> <neighbor> in|out allow|deny <prefix>  # ordered prefix filter
+bgp-as-filter <router> <neighbor> allow|deny <asn>         # inbound AS-path filter
+bgp-community <router> <prefix> <ASN:VALUE|clear>         # outbound communities
+bgp-community-filter <router> <neighbor> allow|deny <ASN:VALUE>
+bgp-max-prefix <router> <neighbor> <max>       # per-peer prefix limit
+bgp-shutdown <router> <neighbor> on|off        # administrative shutdown
 bgp-path   <router> <peer> <prefix> <next-hop> <asn...>  # offline path injection
 bgp-status <router>                            # neighbors, paths, selected RIB
 tcp-lite-echo   <device> on|off [port]          # deprecated (NOT TCP)
@@ -946,7 +961,8 @@ Three layers of tests, all runnable with `make test`:
 - `tests/unit/unit_tests.cpp` — unit tests for the codecs and addressing
   (`Ipv4`, `Ipv4Subnet`, `Mac`, `ARP`, `IpPacket`, `IcmpMessage`,
   `EthernetFrame` incl. 802.1Q), TCP option/reliability/PMTU behaviour and OSPF
-  packet/LSA checksums (512 checks), built with `-Werror` + ASan/UBSan.
+  packet/LSA checksums plus LLDP TLV round-trip (528 checks), built with
+  `-Werror` + ASan/UBSan.
 - `tests/fuzz_parsers.cpp` — deterministic fuzzing of every byte parser; must
   stay ASan/UBSan-clean.
 - `tests/*.txt` scenarios — each `NAME.txt` is a scene and `NAME.want` a substring
@@ -1178,6 +1194,7 @@ Implemented:
 - [x] STP link-failure reconvergence (`set-link down|up`) with MAC flush
 - [x] Per-port rx/tx/drop counters (`stats <device>`) and drop reasons (`drop-stats`)
 - [x] STP Hello/Max-Age keepalives + RSTP-style rapid mode + ingress SPAN mirroring
+- [x] LLDP neighbor discovery (chassis/port/TTL TLVs, per-device 30 s interval)
 - [x] pcap frame capture (`pcap <file>` / `pcap off`)
 - [x] JSON topology save/load (`save` / `load`)
 - [x] Bounded `run [duration]` (safe with periodic timers)
@@ -1245,7 +1262,7 @@ Planned:
 - [ ] TCP: reference-stack capture corpus for offline PCAP conformance (no live
       networking or TAP bridge).
 - [ ] OSPF virtual links, IPv6 OSPFv3, full RSTP.
-- [ ] BGP advanced routing policy (filters/communities/AS-path policy).
+- [ ] BGP advanced community semantics (well-known/extended communities).
 - [ ] Scale/engineering: `--jobs` parallel scenarios, `src/` restructure, CMake
       presets, three-platform CI.
 - [ ] Full IEEE 802.1w proposal/agreement (current RSTP mode is a rapid subset)

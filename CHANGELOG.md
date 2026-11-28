@@ -91,6 +91,9 @@ Initial product build.
   frames received on a source port to a monitor port using normal egress
   VLAN/STP handling.
 - SPAN mirroring configuration now persists through `save`/`load`.
+- LLDP neighbor discovery: hosts, switches, and routers exchange
+  chassis/port/TTL/system-name TLVs every 30 s; `lldp` enables advertising and
+  `lldp-table` lists learned neighbors until their TTL expires.
 - BGP wire-codec groundwork: OPEN/UPDATE/KEEPALIVE/NOTIFICATION, IPv4
   NLRI/withdrawals, and AS_PATH/NEXT_HOP/LOCAL_PREF/MED path attributes.
 - BGP control-plane groundwork: local AS/router ID, neighbors, advertised
@@ -112,6 +115,24 @@ Initial product build.
 - BGP configuration persistence: AS/router ID, neighbors, networks, local-pref,
   MED, and enabled state round-trip through `save`/`load`; `bgp_session` now
   saves, resets, reloads, and verifies the session/routes.
+- BGP prefix policy: ordered per-neighbor inbound/outbound allow/deny filters
+  (`bgp-filter`), persisted through `save`/`load`; `bgp_filter` verifies a
+  denied path loses best-path selection.
+- BGP AS-path policy: ordered per-neighbor inbound allow/deny filters
+  (`bgp-as-filter`), persisted through `save`/`load`; `bgp_as_filter` verifies
+  a denied AS path loses best-path selection.
+- BGP outbound AS-path prepend (`bgp-prepend`) for traffic engineering, with
+  persistence and a two-provider `bgp_prepend` scenario.
+- BGP communities: outbound community attachment (`bgp-community`) and ordered
+  inbound community allow/deny filters (`bgp-community-filter`), persisted
+  through `save`/`load`; `bgp_community` verifies filtered best-path selection.
+- Quality: BGP policy unit tests for prefix/AS-path/community decisions, and
+  parser fuzzing extended to BGP, IPv6/ICMPv6, UDP/TCP, DHCP, DNS, and OSPF.
+- BGP per-neighbor prefix limits (`bgp-max-prefix`) bound received RIB growth,
+  persisted through `save`/`load` with a `bgp_maxprefix` scenario.
+- BGP administrative neighbor shutdown (`bgp-shutdown`) withdraws the peer's
+  routes, stops reconnection, and persists through `save`/`load`; a
+  `bgp_shutdown` scenario verifies the withdrawn state.
 - Internal cleanup: BGP session/transport code moved to `device/RouterBgp.cpp`,
   inactive OSPF virtual-link scaffolding removed, and duplicated IPv6 NDP
   solicited-node helpers consolidated in `core/Icmpv6Message`.

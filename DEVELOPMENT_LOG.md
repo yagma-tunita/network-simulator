@@ -2176,6 +2176,119 @@ Conventions:
 
 ---
 
+## Phase 134 — BGP prefix filters (2026-11-27)
+
+- Added ordered per-neighbor inbound/outbound BGP prefix filters
+  (`bgp-filter <router> <neighbor> in|out allow|deny <prefix>`); the first
+  exact-prefix match wins and the default is allow.
+- Inbound filters remove matching paths and rerun best-path selection; outbound
+  filters suppress matching local-network advertisements.
+- BGP filter configuration persists through `save`/`load`.
+- Added the `bgp_filter` scenario (deny one provider's path, select the other)
+  and cleaned its saved-scene artifact.
+- Tests: 512 unit checks, 130 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 56.1% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 135 — BGP AS-path filters (2026-11-27)
+
+- Added ordered per-neighbor inbound AS-path allow/deny filters
+  (`bgp-as-filter <router> <neighbor> allow|deny <asn>`); first ASN match wins,
+  default allow.
+- Inbound filters remove matching paths and rerun best-path selection; filters
+  persist through `save`/`load`.
+- Added the `bgp_as_filter` scenario (deny one provider's AS path after a
+  local-preference preference, verify the other path is selected).
+- Tests: 512 unit checks, 131 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 56.1% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 136 — BGP AS-path prepend (2026-11-27)
+
+- Added `bgp-prepend <router> <prefix> <count>` to prepend the local ASN to
+  outbound advertisements (0..10 repetitions).
+- Prepended paths participate in normal AS-path length best-path selection and
+  persist through `save`/`load`.
+- Added the two-provider `bgp_prepend` scenario selecting the unprepended path.
+- Tests: 512 unit checks, 132 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 56.0% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 137 — BGP communities (2026-11-27)
+
+- Added COMMUNITIES path-attribute encode/decode (type 8) with equality and
+  codec unit checks.
+- Added outbound per-prefix community attachment (`bgp-community`) and ordered
+  per-neighbor inbound community allow/deny filters
+  (`bgp-community-filter`); first matching community wins, default allow.
+- Filters are applied to received paths and re-applied on policy changes;
+  configuration persists through `save`/`load`.
+- Added the two-provider `bgp_community` scenario selecting the unfiltered path.
+- Tests: 514 unit checks, 133 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 56.0% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 138 — BGP policy tests and parser fuzzing (2026-11-27)
+
+- Added unit checks for BGP prefix, AS-path, and community filter decisions and
+  for inbound policy removing a stored path.
+- Extended `fuzz_parsers` to BGP, IPv6/ICMPv6, UDP/TCP, DHCP, DNS, and OSPF
+  parsers (200k deterministic iterations, ASan/UBSan clean).
+- No protocol behavior changes.
+- Tests: 522 unit checks, 133 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 56.0% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 139 — BGP per-neighbor prefix limit (2026-11-27)
+
+- Added `bgp-max-prefix <router> <neighbor> <max>`; excess new prefixes are
+  dropped while existing prefixes from that peer can still be refreshed.
+- The limit persists through `save`/`load`.
+- Added the `bgp_maxprefix` scenario (two advertised prefixes, limit one) and
+  verified RIB size remains bounded.
+- Tests: 522 unit checks, 134 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 56.0% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 140 — BGP administrative neighbor shutdown (2026-11-27)
+
+- Added `bgp-shutdown <router> <neighbor> on|off`; shutdown withdraws that
+  peer's paths, rebuilds sessions without it, and suppresses passive accepts.
+- The state persists in the BGP neighbor config through `save`/`load`.
+- Added `bgp_shutdown` scenario verifying `paths=0 rib=0` after shutdown.
+- Tests: 522 unit checks, 135 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 55.9% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
+## Phase 141 — LLDP neighbor discovery (2026-11-28)
+
+- Added the `core/Lldp` codec for chassis-ID, port-ID, TTL, and system-name
+  TLVs, with EtherType `0x88CC` and destination `01:80:c2:00:00:0e`.
+- Hosts, switches, and routers consume LLDP before MAC filtering and advertise
+  every 30 s while enabled (`lldp <device> on|off`); TTL is 120 s.
+- `lldp-table <device>` prints learned chassis/port pairs and hides expired
+  entries.
+- Added the `lldp` scenario and codec round-trip/fuzz coverage.
+- Tests: 528 unit checks, 136 scenarios; Linux/Windows scenario suites and Go
+  tests pass; coverage 55.5% (floor 54%); soak and perf green; build artifacts
+  preserved.
+
+---
+
 ## Validation approach (2026-11-20)
 
 Each increment was verified with small, focused tests compiled against the

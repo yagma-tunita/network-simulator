@@ -2,9 +2,18 @@
 #include "core/ARP.hpp"
 #include "core/IpPacket.hpp"
 #include "core/IcmpMessage.hpp"
+#include "core/Icmpv6Message.hpp"
 #include "core/Ipv4.hpp"
 #include "core/Ipv4Subnet.hpp"
+#include "core/Ipv6Packet.hpp"
 #include "core/Mac.hpp"
+#include "core/BgpMessage.hpp"
+#include "core/Lldp.hpp"
+#include "core/DhcpMessage.hpp"
+#include "core/DnsMessage.hpp"
+#include "core/OspfPacket.hpp"
+#include "core/TcpSegment.hpp"
+#include "core/UdpDatagram.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -38,6 +47,25 @@ int main()
 
         IcmpMessage icmp;
         (void)IcmpMessage::TryFromBytes(buf, icmp);
+
+        Ipv6Packet ip6;
+        (void)Ipv6Packet::TryFromBytes(buf, ip6);
+        Icmpv6Message icmp6;
+        (void)Icmpv6Message::TryFromBytes(buf, Ipv6(), Ipv6(), icmp6);
+        BgpMessage bgp;
+        (void)BgpMessage::TryFromBytes(buf, bgp);
+        LldpFrame lldp;
+        (void)LldpFrame::TryFromBytes(buf, lldp);
+        UdpDatagram udp;
+        (void)UdpDatagram::TryFromBytes(buf, udp);
+        TcpSegment tcp;
+        (void)TcpSegment::TryFromBytes(buf, tcp);
+        DhcpMessage dhcp;
+        (void)DhcpMessage::TryFromBytes(buf, dhcp);
+        DnsMessage dns;
+        (void)DnsMessage::TryFromBytes(buf, dns);
+        OspfPacket ospf;
+        (void)OspfPacket::TryFromBytes(buf, ospf);
 
         std::string s(buf.begin(), buf.end());
         Ipv4 a;

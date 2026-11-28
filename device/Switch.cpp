@@ -70,6 +70,12 @@ void Switch::OnFrame(Port *port, FramePtr frame)
 {
     if(!port) return;
 
+    if(frame->type == EthernetFrame::kLLDP)
+    {
+        HandleLldp(port, frame);
+        return;
+    }
+
     if(frame->type == EthernetFrame::kSTP)
     {
         HandleBpdu(port, *frame);

@@ -51,6 +51,19 @@ namespace
         return "other";
     }
 
+    uint32_t ParseBgpCommunity(const std::string &s)
+    {
+        std::size_t colon = s.find(':');
+        if(colon == std::string::npos || colon == 0 ||
+           colon + 1 >= s.size())
+            throw std::invalid_argument("BGP community must be ASN:VALUE");
+        unsigned long hi = std::stoul(s.substr(0, colon));
+        unsigned long lo = std::stoul(s.substr(colon + 1));
+        if(hi > 65535 || lo > 65535)
+            throw std::invalid_argument("BGP community ASN/value out of range");
+        return (uint32_t(hi) << 16) | uint32_t(lo);
+    }
+
     const char *OspfIfName(uint8_t s)
     {
         switch(s)
@@ -438,6 +451,39 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
             throw std::invalid_argument("span source and destination must differ");
         sw->SetSpan(sw->portList[src.second], sw->portList[dst.second]);
         std::cout << "span configured\n";
+    }
+    else if (cmd == "lldp")
+    {
+        if (t.size() != 3 || (t[2] != "on" && t[2] != "off"))
+            throw std::invalid_argument("lldp <device> on|off");
+        Device *d = topo.FindDevice(t[1]);
+        if (!d)
+            throw std::invalid_argument("unknown device '" + t[1] + "'");
+        d->SetLldp(t[2] == "on");
+    }
+    else if (cmd == "lldp-table")
+    {
+        if (t.size() != 2)
+            throw std::invalid_argument("lldp-table <device>");
+        Device *d = topo.FindDevice(t[1]);
+        if (!d)
+            throw std::invalid_argument("unknown device '" + t[1] + "'");
+        uint64_t now = d->clock ? d->clock->Now() : 0;
+        std::cout << t[1] << " lldp:\n";
+        for (const Device::LldpNeighbor &n : d->lldpNeighbors)
+        {
+            if (n.expires <= now)
+                continue;
+            std::size_t idx = 0;
+            for (std::size_t i = 0; i < d->portList.size(); ++i)
+                if (d->portList[i] == n.port)
+                {
+                    idx = i;
+                    break;
+                }
+            std::cout << "  p" << idx << " chassis=" << n.chassis.ToString()
+                      << " port=" << n.portId << "\n";
+        }
     }
     else if (cmd == "stp-status")
     {
@@ -2270,6 +2316,152 @@ void ExecuteCommand(Topology &topo, const std::vector<std::string> &t)
         if (value > 0xFFFFFFFFull)
             throw std::invalid_argument("bgp MED out of range");
         r->bgpMedOut[Ipv4Subnet(t[2])] = uint32_t(value);
+    }
+    else if (cmd == "bgp-prepend")
+    {
+        if (t.size() != 4)
+            throw std::invalid_argument("bgp-prepend <router> <prefix> <count>");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        unsigned count = std::stoul(t[3]);
+        if (count > 10)
+            throw std::invalid_argument("bgp prepend count must be 0..10");
+        Ipv4Subnet prefix(t[2]);
+        if (count == 0)
+            r->bgpPrependOut.erase(prefix);
+        else
+            r->bgpPrependOut[prefix] = uint8_t(count);
+    }
+    else if (cmd == "bgp-filter")
+    {
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        if (t.size() == 3 && t[2] == "clear")
+        {
+            r->bgpInFilters.clear();
+            r->bgpOutFilters.clear();
+            r->BgpReapplyPolicy();
+            return;
+        }
+        if (t.size() != 6)
+            throw std::invalid_argument("bgp-filter <router> <neighbor> in|out allow|deny <prefix>");
+        bool inbound;
+        if (t[3] == "in") inbound = true;
+        else if (t[3] == "out") inbound = false;
+        else throw std::invalid_argument("bgp-filter direction must be in or out");
+        bool permit;
+        if (t[4] == "allow") permit = true;
+        else if (t[4] == "deny") permit = false;
+        else throw std::invalid_argument("bgp-filter action must be allow or deny");
+        BgpFilter f;
+        f.prefix = Ipv4Subnet(t[5]);
+        f.permit = permit;
+        (inbound ? r->bgpInFilters : r->bgpOutFilters)[Ipv4(t[2])].push_back(f);
+        if (inbound)
+            r->BgpReapplyPolicy();
+    }
+    else if (cmd == "bgp-as-filter")
+    {
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        if (t.size() == 3 && t[2] == "clear")
+        {
+            r->bgpInAsFilters.clear();
+            r->BgpReapplyPolicy();
+            return;
+        }
+        if (t.size() != 5)
+            throw std::invalid_argument("bgp-as-filter <router> <neighbor> allow|deny <asn>");
+        bool permit;
+        if (t[3] == "allow") permit = true;
+        else if (t[3] == "deny") permit = false;
+        else throw std::invalid_argument("bgp-as-filter action must be allow or deny");
+        unsigned asn = std::stoul(t[4]);
+        if (asn == 0 || asn > 65535)
+            throw std::invalid_argument("bgp AS-filter ASN out of range");
+        BgpAsFilter f;
+        f.asn = uint16_t(asn);
+        f.permit = permit;
+        r->bgpInAsFilters[Ipv4(t[2])].push_back(f);
+        r->BgpReapplyPolicy();
+    }
+    else if (cmd == "bgp-community")
+    {
+        if (t.size() != 4)
+            throw std::invalid_argument("bgp-community <router> <prefix> <ASN:VALUE|clear>");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        Ipv4Subnet prefix(t[2]);
+        if (t[3] == "clear")
+        {
+            r->bgpCommunitiesOut.erase(prefix);
+            return;
+        }
+        uint32_t community = ParseBgpCommunity(t[3]);
+        r->bgpCommunitiesOut[prefix].push_back(community);
+    }
+    else if (cmd == "bgp-community-filter")
+    {
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        if (t.size() == 3 && t[2] == "clear")
+        {
+            r->bgpCommunityFilters.clear();
+            r->BgpReapplyPolicy();
+            return;
+        }
+        if (t.size() != 5)
+            throw std::invalid_argument("bgp-community-filter <router> <neighbor> allow|deny <ASN:VALUE>");
+        bool permit;
+        if (t[3] == "allow") permit = true;
+        else if (t[3] == "deny") permit = false;
+        else throw std::invalid_argument("bgp-community-filter action must be allow or deny");
+        BgpCommunityFilter f;
+        f.community = ParseBgpCommunity(t[4]);
+        f.permit = permit;
+        r->bgpCommunityFilters[Ipv4(t[2])].push_back(f);
+        r->BgpReapplyPolicy();
+    }
+    else if (cmd == "bgp-max-prefix")
+    {
+        if (t.size() != 4)
+            throw std::invalid_argument("bgp-max-prefix <router> <neighbor> <max>");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        unsigned long long value = std::stoull(t[3]);
+        if (value > 0xFFFFFFFFull)
+            throw std::invalid_argument("bgp max-prefix out of range");
+        Ipv4 peer(t[2]);
+        if (value == 0)
+            r->bgpMaxPrefix.erase(peer);
+        else
+            r->bgpMaxPrefix[peer] = uint32_t(value);
+    }
+    else if (cmd == "bgp-shutdown")
+    {
+        if (t.size() != 4)
+            throw std::invalid_argument("bgp-shutdown <router> <neighbor> on|off");
+        Router *r = dynamic_cast<Router *>(topo.FindDevice(t[1]));
+        if (!r)
+            throw std::invalid_argument("'" + t[1] + "' is not a router");
+        if (t[3] != "on" && t[3] != "off")
+            throw std::invalid_argument("bgp-shutdown state must be on or off");
+        Ipv4 peer(t[2]);
+        if (t[3] == "off")
+            r->bgpShutdown.erase(peer);
+        else
+        {
+            r->bgpShutdown[peer] = true;
+            r->BgpWithdrawPeer(peer);
+        }
+        if (r->bgpEnabled)
+            r->BgpStart();
     }
     else if (cmd == "bgp-path")
     {

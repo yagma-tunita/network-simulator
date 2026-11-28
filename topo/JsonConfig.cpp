@@ -371,7 +371,11 @@ bool SaveTopologyJson(const Topology &topo, const std::string &path,
             if(!nf) out << ",";
             nf = false;
             out << "{\"ip\":" << Quote(n.first.ToString())
-                << ",\"as\":" << n.second << "}";
+                << ",\"as\":" << n.second;
+            auto shut = r->bgpShutdown.find(n.first);
+            if(shut != r->bgpShutdown.end() && shut->second)
+                out << ",\"shutdown\":true";
+            out << "}";
         }
         out << "],\"networks\":[";
         bool nwf = true;
@@ -398,6 +402,82 @@ bool SaveTopologyJson(const Topology &topo, const std::string &path,
             mf = false;
             out << "{\"prefix\":" << Quote(m.first.ToString())
                 << ",\"value\":" << m.second << "}";
+        }
+        out << "],\"prepend\":[";
+        bool pf = true;
+        for(const auto &p : r->bgpPrependOut)
+        {
+            if(!pf) out << ",";
+            pf = false;
+            out << "{\"prefix\":" << Quote(p.first.ToString())
+                << ",\"count\":" << int(p.second) << "}";
+        }
+        out << "],\"communities\":[";
+        bool cf = true;
+        for(const auto &ckv : r->bgpCommunitiesOut)
+            for(uint32_t c : ckv.second)
+            {
+                if(!cf) out << ",";
+                cf = false;
+                out << "{\"prefix\":" << Quote(ckv.first.ToString())
+                    << ",\"value\":" << Quote(
+                        std::to_string(c >> 16) + ":" +
+                        std::to_string(c & 0xFFFF)) << "}";
+            }
+        out << "],\"inFilters\":[";
+        bool inf = true;
+        for(const auto &fkv : r->bgpInFilters)
+            for(const BgpFilter &f : fkv.second)
+            {
+                if(!inf) out << ",";
+                inf = false;
+                out << "{\"ip\":" << Quote(fkv.first.ToString())
+                    << ",\"action\":" << Quote(f.permit ? "allow" : "deny")
+                    << ",\"prefix\":" << Quote(f.prefix.ToString()) << "}";
+            }
+        out << "],\"outFilters\":[";
+        bool outf = true;
+        for(const auto &fkv : r->bgpOutFilters)
+            for(const BgpFilter &f : fkv.second)
+            {
+                if(!outf) out << ",";
+                outf = false;
+                out << "{\"ip\":" << Quote(fkv.first.ToString())
+                    << ",\"action\":" << Quote(f.permit ? "allow" : "deny")
+                    << ",\"prefix\":" << Quote(f.prefix.ToString()) << "}";
+            }
+        out << "],\"asFilters\":[";
+        bool asf = true;
+        for(const auto &fkv : r->bgpInAsFilters)
+            for(const BgpAsFilter &f : fkv.second)
+            {
+                if(!asf) out << ",";
+                asf = false;
+                out << "{\"ip\":" << Quote(fkv.first.ToString())
+                    << ",\"action\":" << Quote(f.permit ? "allow" : "deny")
+                    << ",\"asn\":" << f.asn << "}";
+            }
+        out << "],\"communityFilters\":[";
+        bool cff = true;
+        for(const auto &fkv : r->bgpCommunityFilters)
+            for(const BgpCommunityFilter &f : fkv.second)
+            {
+                if(!cff) out << ",";
+                cff = false;
+                out << "{\"ip\":" << Quote(fkv.first.ToString())
+                    << ",\"action\":" << Quote(f.permit ? "allow" : "deny")
+                    << ",\"value\":" << Quote(
+                        std::to_string(f.community >> 16) + ":" +
+                        std::to_string(f.community & 0xFFFF)) << "}";
+            }
+        out << "],\"maxPrefix\":[";
+        bool mpf = true;
+        for(const auto &m : r->bgpMaxPrefix)
+        {
+            if(!mpf) out << ",";
+            mpf = false;
+            out << "{\"ip\":" << Quote(m.first.ToString())
+                << ",\"max\":" << m.second << "}";
         }
         out << "]}";
     }
@@ -717,10 +797,15 @@ bool ParseConfigJson(const std::string &path, std::vector<std::string> &cmds,
             const JVal *neighbors = b.Get("neighbors");
             if(neighbors && neighbors->type == JVal::Arr)
                 for(const auto &n : neighbors->arr)
+                {
                     cmds.push_back("bgp-neighbor " + router + " " +
                                    n.S("ip") + " " +
                                    std::to_string((unsigned long long)
                                                   n.N("as", 0)));
+                    if(n.B("shutdown", false))
+                        cmds.push_back("bgp-shutdown " + router + " " +
+                                       n.S("ip") + " on");
+                }
 
             const JVal *networks = b.Get("networks");
             if(networks && networks->type == JVal::Arr)
@@ -743,6 +828,57 @@ bool ParseConfigJson(const std::string &path, std::vector<std::string> &cmds,
                                    m.S("prefix") + " " +
                                    std::to_string((unsigned long long)
                                                   m.N("value", 0)));
+
+            const JVal *prepend = b.Get("prepend");
+            if(prepend && prepend->type == JVal::Arr)
+                for(const auto &p : prepend->arr)
+                    cmds.push_back("bgp-prepend " + router + " " +
+                                   p.S("prefix") + " " +
+                                   std::to_string((unsigned long long)
+                                                  p.N("count", 0)));
+
+            const JVal *inFilters = b.Get("inFilters");
+            if(inFilters && inFilters->type == JVal::Arr)
+                for(const auto &f : inFilters->arr)
+                    cmds.push_back("bgp-filter " + router + " " +
+                                   f.S("ip") + " in " + f.S("action") +
+                                   " " + f.S("prefix"));
+
+            const JVal *outFilters = b.Get("outFilters");
+            if(outFilters && outFilters->type == JVal::Arr)
+                for(const auto &f : outFilters->arr)
+                    cmds.push_back("bgp-filter " + router + " " +
+                                   f.S("ip") + " out " + f.S("action") +
+                                   " " + f.S("prefix"));
+
+            const JVal *asFilters = b.Get("asFilters");
+            if(asFilters && asFilters->type == JVal::Arr)
+                for(const auto &f : asFilters->arr)
+                    cmds.push_back("bgp-as-filter " + router + " " +
+                                   f.S("ip") + " " + f.S("action") + " " +
+                                   std::to_string((unsigned long long)
+                                                  f.N("asn", 0)));
+
+            const JVal *communities = b.Get("communities");
+            if(communities && communities->type == JVal::Arr)
+                for(const auto &c : communities->arr)
+                    cmds.push_back("bgp-community " + router + " " +
+                                   c.S("prefix") + " " + c.S("value"));
+
+            const JVal *communityFilters = b.Get("communityFilters");
+            if(communityFilters && communityFilters->type == JVal::Arr)
+                for(const auto &f : communityFilters->arr)
+                    cmds.push_back("bgp-community-filter " + router + " " +
+                                   f.S("ip") + " " + f.S("action") + " " +
+                                   f.S("value"));
+
+            const JVal *maxPrefix = b.Get("maxPrefix");
+            if(maxPrefix && maxPrefix->type == JVal::Arr)
+                for(const auto &m : maxPrefix->arr)
+                    cmds.push_back("bgp-max-prefix " + router + " " +
+                                   m.S("ip") + " " +
+                                   std::to_string((unsigned long long)
+                                                  m.N("max", 0)));
 
             if(b.B("enabled", false))
                 cmds.push_back("bgp " + router + " on");

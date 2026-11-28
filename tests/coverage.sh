@@ -58,5 +58,5 @@ awk -v THRESH="$THRESHOLD" '
 ' /tmp/yn_gcov.txt
 
 rc=$?
-rm -f tests/netsim_test.pcap tests/netsim_tcp_test.pcap tests/netsim_saved.yn tests/netsim_ipv6_saved.yn tests/netsim_acl_saved.yn tests/netsim_acl6_saved.yn tests/netsim_nat_saved.yn tests/netsim_span_saved.yn tests/netsim_bgp_saved.yn
+rm -f tests/netsim_test.pcap tests/netsim_tcp_test.pcap tests/netsim_saved.yn tests/netsim_ipv6_saved.yn tests/netsim_acl_saved.yn tests/netsim_acl6_saved.yn tests/netsim_nat_saved.yn tests/netsim_span_saved.yn tests/netsim_bgp_saved.yn tests/netsim_bgp_filter_saved.yn tests/netsim_bgp_asf_saved.yn tests/netsim_bgp_prepend_saved.yn tests/netsim_bgp_comm_saved.yn tests/netsim_bgp_max_saved.yn
 exit "$rc"

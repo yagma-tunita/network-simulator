@@ -64,6 +64,7 @@ struct BgpPath
     uint8_t origin = 0;
     Ipv4 routerId;
     bool ebgp = true;
+    std::vector<uint32_t> communities;
 };
 
 struct BgpSelected
@@ -72,6 +73,24 @@ struct BgpSelected
     Ipv4 nextHop;
     Ipv4 peer;
     std::vector<uint16_t> asPath;
+};
+
+struct BgpFilter
+{
+    Ipv4Subnet prefix;
+    bool permit = true;
+};
+
+struct BgpAsFilter
+{
+    uint16_t asn = 0;
+    bool permit = true;
+};
+
+struct BgpCommunityFilter
+{
+    uint32_t community = 0;
+    bool permit = true;
 };
 
 struct Router : Device
@@ -286,6 +305,14 @@ struct Router : Device
     std::map<Ipv4, uint16_t> bgpNeighbors;
     std::map<Ipv4, uint32_t> bgpLocalPrefIn;
     std::map<Ipv4Subnet, uint32_t> bgpMedOut;
+    std::map<Ipv4Subnet, uint8_t> bgpPrependOut;
+    std::map<Ipv4Subnet, std::vector<uint32_t>> bgpCommunitiesOut;
+    std::map<Ipv4, std::vector<BgpFilter>> bgpInFilters;
+    std::map<Ipv4, std::vector<BgpFilter>> bgpOutFilters;
+    std::map<Ipv4, std::vector<BgpAsFilter>> bgpInAsFilters;
+    std::map<Ipv4, std::vector<BgpCommunityFilter>> bgpCommunityFilters;
+    std::map<Ipv4, uint32_t> bgpMaxPrefix;
+    std::map<Ipv4, bool> bgpShutdown;
     std::vector<Ipv4Subnet> bgpNetworks;
     std::vector<BgpPath> bgpPaths;
     std::vector<BgpSelected> bgpRib;
@@ -321,6 +348,13 @@ struct Router : Device
     void BgpWithdraw(const Ipv4 &peer, const Ipv4Subnet &prefix);
     void BgpWithdrawPeer(const Ipv4 &peer);
     void BgpReapplyPolicy();
+    bool BgpFilterAllows(const std::vector<BgpFilter> &filters,
+                         const Ipv4Subnet &prefix) const;
+    bool BgpAsFilterAllows(const std::vector<BgpAsFilter> &filters,
+                           const std::vector<uint16_t> &asPath) const;
+    bool BgpCommunityFilterAllows(
+        const std::vector<BgpCommunityFilter> &filters,
+        const std::vector<uint32_t> &communities) const;
     void BgpSelect();
 
     void FlushPending();

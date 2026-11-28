@@ -36,6 +36,7 @@ struct BgpMessage
     uint32_t localPref = 0;
     bool hasMed = false;
     uint32_t med = 0;
+    std::vector<uint32_t> communities;
 
     std::vector<uint8_t> ToBytes() const;
     static bool TryFromBytes(const std::vector<uint8_t> &buf, BgpMessage &out);

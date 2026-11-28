@@ -12,6 +12,7 @@ struct EthernetFrame
     static constexpr uint16_t kIPv4 = 0x0800;
     static constexpr uint16_t kIPv6 = 0x86DD;
     static constexpr uint16_t kARP  = 0x0806;
+    static constexpr uint16_t kLLDP = 0x88CC;
     static constexpr uint16_t kVlanTpid = 0x8100;
     static constexpr uint16_t kSTP  = 0x8E01;
 

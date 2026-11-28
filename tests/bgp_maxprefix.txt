@@ -1,0 +1,21 @@
+add-device R1 router
+add-device R3 router
+add-port R1 aa:00:00:00:00:01 10.0.0.1/24
+add-port R3 aa:00:00:00:00:02 10.0.0.2/24
+connect R1:0 R3:0
+bgp-as R1 65001
+bgp-router-id R1 1.1.1.1
+bgp-neighbor R1 10.0.0.2 65003
+bgp-network R1 203.0.113.0/24
+bgp-network R1 198.51.100.0/24
+bgp-as R3 65003
+bgp-router-id R3 3.3.3.3
+bgp-neighbor R3 10.0.0.1 65001
+bgp-max-prefix R3 10.0.0.1 1
+bgp R1 on
+bgp R3 on
+save tests/netsim_bgp_max_saved.yn
+new
+load tests/netsim_bgp_max_saved.yn
+run 500
+bgp-status R3

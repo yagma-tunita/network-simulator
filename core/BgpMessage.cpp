@@ -108,6 +108,13 @@ std::vector<uint8_t> BgpMessage::ToBytes() const
                 AppendU32(medBytes, med);
                 AppendAttribute(attrs, 0x80, 4, medBytes);
             }
+            if(!communities.empty())
+            {
+                std::vector<uint8_t> comm;
+                for(uint32_t c : communities)
+                    AppendU32(comm, c);
+                AppendAttribute(attrs, 0xC0, 8, comm);
+            }
         }
 
         AppendU16(body, uint16_t(withdrawnBytes.size()));
@@ -249,6 +256,11 @@ bool BgpMessage::TryFromBytes(const std::vector<uint8_t> &buf, BgpMessage &out)
             out.hasMed = true;
             out.med = ReadU32(buf, off);
         }
+        else if(code == 8 && vlen % 4 == 0)
+        {
+            for(std::size_t p = off; p < vend; p += 4)
+                out.communities.push_back(ReadU32(buf, p));
+        }
         off = vend;
     }
 
@@ -265,7 +277,8 @@ bool BgpMessage::operator==(const BgpMessage &o) const
         && data == o.data && withdrawn == o.withdrawn && nlri == o.nlri
         && origin == o.origin && asPath == o.asPath
         && nextHop == o.nextHop && hasLocalPref == o.hasLocalPref
-        && localPref == o.localPref && hasMed == o.hasMed && med == o.med;
+        && localPref == o.localPref && hasMed == o.hasMed && med == o.med
+        && communities == o.communities;
 }
 
 std::string BgpMessage::ToString() const

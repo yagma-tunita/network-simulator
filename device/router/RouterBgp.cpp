@@ -76,6 +76,9 @@ void Router::BgpStart()
     for(const auto &kv : bgpNeighbors)
     {
         Ipv4 peer = kv.first;
+        auto shut = bgpShutdown.find(peer);
+        if(shut != bgpShutdown.end() && shut->second)
+            continue;
         const Route *r = FindRoute(peer);
         if(!r)
             continue;
@@ -202,6 +205,14 @@ void Router::BgpOnConnected(BgpSession &s)
             BgpScheduleReconnect(s);
             return;
         }
+        auto shut = bgpShutdown.find(s.conn.remoteIp);
+        if(shut != bgpShutdown.end() && shut->second)
+        {
+            s.conn.Abort();
+            s.state = 0;
+            BgpScheduleReconnect(s);
+            return;
+        }
         s.peerIp = s.conn.remoteIp;
         s.remoteAs = it->second;
     }
@@ -276,10 +287,18 @@ void Router::BgpHandle(BgpSession &s, const BgpMessage &msg)
         s.sentUpdates = true;
         for(const Ipv4Subnet &prefix : bgpNetworks)
         {
+            auto fit = bgpOutFilters.find(s.peerIp);
+            if(fit != bgpOutFilters.end() &&
+               !BgpFilterAllows(fit->second, prefix))
+                continue;
             BgpMessage u;
             u.type = BgpMessage::Update;
             u.origin = 0;
             u.asPath = { bgpLocalAs };
+            auto pit = bgpPrependOut.find(prefix);
+            if(pit != bgpPrependOut.end())
+                for(uint8_t i = 0; i < pit->second; ++i)
+                    u.asPath.push_back(bgpLocalAs);
             u.nextHop = s.conn.localIp;
             auto mit = bgpMedOut.find(prefix);
             if(mit != bgpMedOut.end())
@@ -287,6 +306,9 @@ void Router::BgpHandle(BgpSession &s, const BgpMessage &msg)
                 u.hasMed = true;
                 u.med = mit->second;
             }
+            auto cit = bgpCommunitiesOut.find(prefix);
+            if(cit != bgpCommunitiesOut.end())
+                u.communities = cit->second;
             u.nlri.push_back(prefix);
             BgpSend(s, u);
         }
@@ -299,6 +321,33 @@ void Router::BgpHandle(BgpSession &s, const BgpMessage &msg)
             BgpWithdraw(s.peerIp, prefix);
         for(const Ipv4Subnet &prefix : msg.nlri)
         {
+            auto fit = bgpInFilters.find(s.peerIp);
+            if(fit != bgpInFilters.end() &&
+               !BgpFilterAllows(fit->second, prefix))
+                continue;
+            auto ait = bgpInAsFilters.find(s.peerIp);
+            if(ait != bgpInAsFilters.end() &&
+               !BgpAsFilterAllows(ait->second, msg.asPath))
+                continue;
+            auto cfit = bgpCommunityFilters.find(s.peerIp);
+            if(cfit != bgpCommunityFilters.end() &&
+               !BgpCommunityFilterAllows(cfit->second, msg.communities))
+                continue;
+            auto mitLimit = bgpMaxPrefix.find(s.peerIp);
+            if(mitLimit != bgpMaxPrefix.end() && mitLimit->second > 0)
+            {
+                std::size_t count = 0;
+                bool exists = false;
+                for(const BgpPath &p : bgpPaths)
+                    if(p.peer == s.peerIp)
+                    {
+                        ++count;
+                        if(p.prefix == prefix)
+                            exists = true;
+                    }
+                if(!exists && count >= mitLimit->second)
+                    continue;
+            }
             BgpPath p;
             p.prefix = prefix;
             p.peer = s.peerIp;
@@ -312,6 +361,7 @@ void Router::BgpHandle(BgpSession &s, const BgpMessage &msg)
             p.origin = msg.origin;
             p.routerId = s.peerIp;
             p.ebgp = !msg.asPath.empty() && msg.asPath.front() != bgpLocalAs;
+            p.communities = msg.communities;
             BgpAddPath(p);
         }
         return;
